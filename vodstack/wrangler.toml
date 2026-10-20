@@ -1,0 +1,14 @@
+name = "vodstack"
+main = "src/index.ts"
+compatibility_date = "2026-10-20"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vodstack"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+APP_NAME = "VODStack"
+# Set ENCRYPTION_KEY with: npx wrangler secret put ENCRYPTION_KEY
+# Use a base64-encoded 32-byte random key. Never commit it.
