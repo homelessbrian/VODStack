@@ -112,7 +112,11 @@ main{max-width:1120px;margin:0 auto;padding:32px 24px 120px}
 .item:hover{background:rgba(255,255,255,.015)}
 .grip{display:grid;place-items:center;width:20px;height:28px;color:var(--dim);cursor:grab;touch-action:none;user-select:none;border-radius:4px}
 .grip:hover{color:var(--paper);background:var(--raised)}
-.dragging{opacity:.55}
+.drag-ghost{position:fixed;z-index:80;pointer-events:none;background:var(--raised);border:1px solid rgba(232,178,76,.55);border-radius:var(--r-m);box-shadow:0 18px 40px rgba(0,0,0,.5);opacity:.96;transform:rotate(-.6deg) scale(1.015);overflow:hidden}
+.drag-ghost .item{border-top:0}
+.drag-ghost .grip{cursor:grabbing;color:var(--brass)}
+.drop-slot{margin:6px 8px;border:1.5px dashed rgba(232,178,76,.6);border-radius:var(--r-m);background:var(--brass-soft)}
+body.is-dragging,body.is-dragging *{cursor:grabbing!important;user-select:none}
 .name-line{display:flex;align-items:center;gap:8px;min-width:0}
 .name{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .caret{border:0;background:transparent;color:var(--brass);cursor:pointer;padding:2px;display:grid;place-items:center;transition:transform .15s}
@@ -564,39 +568,86 @@ const PAGE_JS = String.raw`(function () {
     movie: function (a, b) { return (a.media_type === 'movie' ? 0 : 1) - (b.media_type === 'movie' ? 0 : 1); },
     series: function (a, b) { return (a.media_type === 'series' ? 0 : 1) - (b.media_type === 'series' ? 0 : 1); },
   };
-  // Drag a row by its handle (mouse or touch). Rows hidden by a filter keep their places.
+  // Drag a row by its handle (mouse or touch). The row lifts into a floating copy that follows
+  // the pointer, a gold slot shows where it will land, and the page scrolls near the top/bottom edge.
+  // Rows hidden by a filter keep their places.
   function wireDrag() {
     document.querySelectorAll('[data-drag]').forEach(function (h) {
       h.onpointerdown = function (e) {
+        if (e.button > 0) return;
         e.preventDefault();
         var list = el('rowList');
         var group = h.closest('[data-group]');
-        group.classList.add('dragging');
-        try { h.setPointerCapture(e.pointerId); } catch (x) {}
-        var move = function (ev) {
-          var groups = Array.prototype.slice.call(list.querySelectorAll(':scope > [data-group]'));
+        var start = group.getBoundingClientRect();
+        var grabY = e.clientY - start.top;
+        var y = e.clientY;
+        var ghost = group.cloneNode(true);
+        ghost.removeAttribute('data-group');
+        ghost.querySelectorAll('[id]').forEach(function (x) { x.removeAttribute('id'); });
+        ghost.className = 'drag-ghost';
+        ghost.style.width = start.width + 'px';
+        ghost.style.left = start.left + 'px';
+        ghost.style.top = start.top + 'px';
+        document.body.appendChild(ghost);
+        var slot = document.createElement('div');
+        slot.className = 'drop-slot';
+        slot.style.height = Math.max(start.height, 40) + 'px';
+        list.insertBefore(slot, group);
+        group.style.display = 'none';
+        document.body.classList.add('is-dragging');
+        var frame = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : function (f) { return setTimeout(f, 16); };
+        var stopFrame = window.cancelAnimationFrame ? window.cancelAnimationFrame.bind(window) : clearTimeout;
+        var done = false, timer = null;
+        var place = function () {
+          ghost.style.top = (y - grabY) + 'px';
+          var groups = list.querySelectorAll(':scope > [data-group]');
           var before = null;
           for (var k = 0; k < groups.length; k++) {
             if (groups[k] === group) continue;
             var r = groups[k].getBoundingClientRect();
-            if (ev.clientY < r.top + r.height / 2) { before = groups[k]; break; }
+            if (y < r.top + r.height / 2) { before = groups[k]; break; }
           }
-          if (before !== group.nextSibling) list.insertBefore(group, before);
+          if (before) { if (slot.nextSibling !== before) list.insertBefore(slot, before); }
+          else if (list.lastElementChild !== slot) list.appendChild(slot);
         };
+        // Auto-scroll: the closer to the edge, the faster. Runs every frame, so holding still near an edge keeps scrolling.
+        var tick = function () {
+          if (done) return;
+          var top = 140, bottom = window.innerHeight - 90, speed = 0;
+          if (y < top) speed = -Math.min(24, Math.ceil((top - y) / 5));
+          else if (y > bottom) speed = Math.min(24, Math.ceil((y - bottom) / 5));
+          if (speed) {
+            var before = window.pageYOffset;
+            try { window.scrollBy(0, speed); } catch (x) {}
+            if (window.pageYOffset !== before) place();
+          }
+          timer = frame(tick);
+        };
+        var move = function (ev) { y = ev.clientY; place(); };
         var up = function () {
-          h.removeEventListener('pointermove', move);
-          h.removeEventListener('pointerup', up);
-          h.removeEventListener('pointercancel', up);
-          group.classList.remove('dragging');
+          done = true;
+          stopFrame(timer);
+          document.removeEventListener('pointermove', move);
+          document.removeEventListener('pointerup', up);
+          document.removeEventListener('pointercancel', up);
+          list.insertBefore(group, slot);
+          slot.remove();
+          ghost.remove();
+          group.style.display = '';
+          document.body.classList.remove('is-dragging');
           var shown = Array.prototype.slice.call(list.querySelectorAll(':scope > [data-group]')).map(function (g) { return find(g.dataset.group); });
           var shownSet = {};
           shown.forEach(function (c) { shownSet[c.id] = true; });
           var k = 0;
-          saveTopOrder(topRows().map(function (c) { return shownSet[c.id] ? shown[k++] : c; }));
+          var next = topRows().map(function (c) { return shownSet[c.id] ? shown[k++] : c; });
+          var same = next.every(function (c, i) { return c === topRows()[i]; });
+          if (!same) saveTopOrder(next);
         };
-        h.addEventListener('pointermove', move);
-        h.addEventListener('pointerup', up);
-        h.addEventListener('pointercancel', up);
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+        document.addEventListener('pointercancel', up);
+        place();
+        tick();
       };
     });
   }
