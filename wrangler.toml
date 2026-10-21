@@ -12,3 +12,7 @@ migrations_dir = "migrations"
 APP_NAME = "VODStack"
 # Set ENCRYPTION_KEY with: npx wrangler secret put ENCRYPTION_KEY
 # Use a base64-encoded 32-byte random key. Never commit it.
+
+# Every 10 minutes: ping the relay (if configured) so Render's free tier keeps it awake.
+[triggers]
+crons = ["*/10 * * * *"]

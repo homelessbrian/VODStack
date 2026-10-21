@@ -82,7 +82,7 @@ Wrangler prints a URL similar to `https://vodstack.<your-subdomain>.workers.dev`
 2. Request/use a TMDB API key (v3).
 3. In the app, open **Setup & security → TMDB matching**.
 4. Paste the v3 API key and choose **Save & validate key**.
-5. Once validated, choose **Match next 20 items** repeatedly to process the catalog in batches. Unmatched items are retained and marked for review rather than being silently assigned a weak match.
+5. Once validated, choose **Match titles now** to match what is already imported. After that, matching runs automatically after every import or refresh. Titles that can't be matched confidently keep the provider's own name and poster rather than getting a wrong match.
 
 TMDB matching uses provider titles and optional year hints. Automated title matching can still be wrong; inspect results before relying on the metadata. Manual match correction and deeper episode matching are future improvements.
 
@@ -91,7 +91,7 @@ TMDB matching uses provider titles and optional year hints. Automated title matc
 When an update adds a file to `migrations/`, the database must be updated **before** the new code runs, or the site will error. Cloudflare's GitHub auto-deploy does not do this on its own. Use one of these:
 
 - **From PowerShell** (in the project folder): `npx wrangler d1 migrations apply vodstack --remote`, then `npm run deploy`.
-- **From the Cloudflare dashboard only**: open *Storage & Databases → D1 → vodstack → Console*, paste the contents of the new migration file, run it, then run `INSERT INTO d1_migrations (name) VALUES ('<file name>.sql');` so Wrangler knows it was applied.
+- **From the Cloudflare dashboard only**: open *Storage & Databases → D1 → vodstack → Console* and run each statement of the new migration file **one at a time** (the console only runs the first statement of a paste). If your database was set up through the console, there is no `d1_migrations` table and nothing else is needed.
 
 ## How imports work (and why)
 

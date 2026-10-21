@@ -83,7 +83,14 @@ window.VODImport = (function () {
 
   function str(v) { return v === undefined || v === null ? '' : String(v); }
   function yearOf(v) { var m = str(v).match(/\b(19\d{2}|20\d{2})\b/); return m ? Number(m[1]) : null; }
+  // In a title, only "(1999)" or "… - 1999" count as a year, so "1917" or "Blade Runner 2049" aren't misread.
+  function yearInName(v) {
+    var m = str(v).match(/\(\s*((?:19|20)\d{2})\s*\)|\s[-–]\s((?:19|20)\d{2})\s*(?:\[[^\]]*\])?\s*$/);
+    var y = m ? Number(m[1] || m[2]) : null;
+    return y && y <= new Date().getFullYear() + 1 ? y : null;
+  }
   function clip(v, n) { var s = str(v).trim(); return s ? s.slice(0, n) : null; }
+  function tmdbId(x) { var n = Number(x.tmdb || x.tmdb_id || 0); return n > 0 && n < 1e9 && Math.floor(n) === n ? n : null; }
   function httpUrl(v) { var s = str(v).trim(); return /^https?:\/\//i.test(s) ? s.slice(0, 1000) : null; }
 
   // ---------- M3U ----------
@@ -120,7 +127,7 @@ window.VODImport = (function () {
       var idm = line.split('?')[0].match(/\/(movie|movies|series)\/[^\/]+\/[^\/]+\/(\d+)\.[a-z0-9]+$/i);
       var p = idm ? idm[2] : 'u' + hash(line);
       cats[t + '|' + g] = { t: t, c: g.slice(0, 200), n: g.slice(0, 150) };
-      items.push({ t: t, c: g.slice(0, 200), p: p, title: title.slice(0, 300), y: yearOf(title), img: httpUrl(attr('tvg-logo')), d: null, pb: line.slice(0, 2000) });
+      items.push({ t: t, c: g.slice(0, 200), p: p, title: title.slice(0, 300), y: yearInName(title), img: httpUrl(attr('tvg-logo')), d: null, pb: line.slice(0, 2000) });
     }
     return { items: items, catalogs: Object.keys(cats).map(function (k) { return cats[k]; }), skippedLive: live };
   }
@@ -161,12 +168,12 @@ window.VODImport = (function () {
       var p = str(x.stream_id); if (!p) return;
       var ext = str(x.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'mp4';
       items.push({ t: 'movie', c: catFor('movie', x.category_id), p: p, title: clip(x.name || x.title, 300) || 'Untitled',
-        y: yearOf(x.year) || yearOf(x.releaseDate || x.release_date) || yearOf(x.name), img: httpUrl(x.stream_icon), d: clip(x.plot, 2000), pb: 'xt:' + ext });
+        y: yearOf(x.year) || yearOf(x.releaseDate || x.release_date) || yearInName(x.name), img: httpUrl(x.stream_icon), d: clip(x.plot, 2000), pb: 'xt:' + ext, tm: tmdbId(x) });
     });
     if (Array.isArray(series)) series.forEach(function (x) {
       var p = str(x.series_id); if (!p) return;
       items.push({ t: 'series', c: catFor('series', x.category_id), p: p, title: clip(x.name || x.title, 300) || 'Untitled',
-        y: yearOf(x.year) || yearOf(x.releaseDate || x.release_date) || yearOf(x.name), img: httpUrl(x.cover), d: clip(x.plot, 2000), pb: null });
+        y: yearOf(x.year) || yearOf(x.releaseDate || x.release_date) || yearInName(x.name), img: httpUrl(x.cover), d: clip(x.plot, 2000), pb: null, tm: tmdbId(x) });
     });
     return { items: items, catalogs: Object.keys(cats).map(function (k) { return cats[k]; }), skippedLive: 0 };
   }
@@ -199,7 +206,7 @@ window.VODImport = (function () {
       var key = it.t + '|' + it.c + '|' + it.p;
       if (seen[key]) return;
       seen[key] = true;
-      it.h = hash([it.t, it.c, it.p, it.title, it.y, it.img, it.d, it.pb].join('\u0001'));
+      it.h = hash([it.t, it.c, it.p, it.title, it.y, it.img, it.d, it.pb, it.tm || ''].join('\u0001'));
       var old = existing[key];
       if (!old) { added++; send.push(it); }
       else if (old.h !== it.h || !old.a) { changed++; send.push(it); }
@@ -219,9 +226,10 @@ window.VODImport = (function () {
     }
 
     var total = Object.keys(seen).length;
+    var withTmdb = data.items.filter(function (it) { return it.tm; }).length;
     var status = 'OK · ' + total.toLocaleString() + ' titles (' + added.toLocaleString() + ' new, ' + changed.toLocaleString() + ' updated, ' + gone.length.toLocaleString() + ' removed)';
     await call('POST', base + '/import/finish', { status: status });
-    return { total: total, added: added, changed: changed, unchanged: unchanged, removed: gone.length, catalogs: data.catalogs.length, skippedLive: data.skippedLive, status: status };
+    return { withTmdb: withTmdb, total: total, added: added, changed: changed, unchanged: unchanged, removed: gone.length, catalogs: data.catalogs.length, skippedLive: data.skippedLive, status: status };
   }
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -238,6 +246,39 @@ window.VODImport = (function () {
       if (w.ready) return;
     }
     throw new Error('The relay did not wake up within 3 minutes. Check that the vodstack-relay service is running in Render.');
+  }
+
+  // Link titles to TMDB/IMDb in small batches (each batch stays under Workers Free limits).
+  async function match(progress) {
+    progress = progress || function () {};
+    var st = await call('GET', '/api/tmdb/status');
+    if (!st.configured) return { skipped: true };
+    var ids = [];
+    var after = 0;
+    for (;;) {
+      var page = await call('GET', '/api/tmdb/pending?after=' + after);
+      ids = ids.concat(page.ids);
+      if (page.next === null || page.next === undefined) break;
+      after = page.next;
+    }
+    var total = ids.length, done = 0, matched = 0, unmatched = 0, pause = 0, limited = 0;
+    var batches = [];
+    for (var i = 0; i < ids.length; i += st.batch) batches.push(ids.slice(i, i + st.batch));
+    async function worker() {
+      for (var b = batches.shift(); b; b = batches.shift()) {
+        if (pause) await sleep(pause);
+        var r = await call('POST', '/api/tmdb/match', { ids: b });
+        done += r.checked; matched += r.matched; unmatched += r.unmatched + r.errors;
+        // Rate-limited: back off and retry the batch later (the server skips titles already done).
+        if (r.rateLimited) {
+          if (++limited > 40) throw new Error('TMDB keeps rate-limiting this key. Try "Match titles" again in a few minutes.');
+          pause = 3000; batches.push(b);
+        } else pause = 0;
+        progress('Matching with TMDB… ' + done.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + matched.toLocaleString() + ' matched)');
+      }
+    }
+    if (total) await Promise.all([worker(), worker(), worker()]);
+    return { total: total, matched: matched, unmatched: unmatched };
   }
 
   var running = false;
@@ -270,6 +311,6 @@ window.VODImport = (function () {
     }
   }
 
-  return { run: run, _parseM3U: parseM3U, _hash: hash };
+  return { run: run, match: match, _parseM3U: parseM3U, _hash: hash };
 })();
 `;
