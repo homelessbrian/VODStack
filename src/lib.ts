@@ -40,7 +40,7 @@ export const html = (body: string, status = 200) =>
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
       'content-security-policy':
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' https: data:; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' https: data:; base-uri 'none'; frame-ancestors 'none'",
     },
   });
 export const uuid = () => crypto.randomUUID();
