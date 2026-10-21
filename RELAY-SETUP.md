@@ -9,8 +9,11 @@ so the provider sees an ordinary server instead of a Cloudflare Worker.
 - It only accepts requests that carry your secret `RELAY_KEY`.
 - Provider passwords are sent in the request body, never in the address, so they don't show
   up in Render's logs.
-- Render's free tier puts the relay to sleep after 15 idle minutes. VODStack wakes it
-  automatically, so the first refresh after a break takes about a minute longer.
+- Render's free tier puts the relay to sleep after 15 idle minutes. VODStack wakes it in the
+  background when someone opens Nuvio, and before a refresh, so it's awake while people are watching
+  and asleep otherwise (well within Render's 750 free hours a month).
+- Series episode lists are remembered after the first open and refreshed daily in the background,
+  so most series opens don't need the relay at all.
 
 ## 1. Create the relay on Render
 

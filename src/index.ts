@@ -6,7 +6,7 @@
 // - Each person (a "setup") stores only their own provider login, and their own row names/order/
 //   hidden choices. Stream links are built from the viewer's own login at play time.
 import { dashboard } from './dashboard';
-import { handleAddon } from './addon';
+import { handleAddon, type Ctx } from './addon';
 import { getDb } from './db';
 import { MATCH_BATCH, fillOriginalLanguages, matchBatch, searchTerms, sortKey, tmdbBase } from './tmdb';
 import { copyLanguage } from './lang';
@@ -149,13 +149,24 @@ async function libraryStats(env: Env, libraryId: string) {
   return stats;
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+// Wake the relay (Render's free tier sleeps when idle) when someone starts browsing in Nuvio, so it's
+// ready by the time they open a series. At most once every 5 minutes per Worker instance.
+let lastRelayNudge = 0;
+function nudgeRelay(env: Env, ctx?: Ctx) {
+  if (!ctx || !relayBase(env) || Date.now() - lastRelayNudge < 5 * 60 * 1000) return;
+  lastRelayNudge = Date.now();
+  ctx.waitUntil(wakeRelay(env).catch(() => {}));
+}
+async function route(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method.toUpperCase();
   if (method === 'GET' && path === '/') return html(dashboard());
   if (method === 'GET' && path === '/health') return json({ ok: true, app: env.APP_NAME || 'VODStack' });
-  if (path.startsWith('/addon/')) return (await handleAddon(env, path)) || json({ error: 'Not found.' }, 404);
+  if (path.startsWith('/addon/')) {
+    if (/\/(manifest|catalog\/)/.test(path)) nudgeRelay(env, ctx);
+    return (await handleAddon(env, path, ctx)) || json({ error: 'Not found.' }, 404);
+  }
   const body = method === 'POST' || method === 'PATCH' ? ((await request.json().catch(() => ({}))) as any) : {};
 
   // ---- no session needed ----
@@ -890,10 +901,10 @@ async function route(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
     let res: Response;
     try {
-      res = await route(request, { ...env, DB: env.DB || getDb(env.TURSO_URL, env.TURSO_TOKEN) });
+      res = await route(request, { ...env, DB: env.DB || getDb(env.TURSO_URL, env.TURSO_TOKEN) }, ctx);
     } catch (e) {
       res = responseError(e);
     }
@@ -904,10 +915,9 @@ export default {
     }
     return res;
   },
-  // Cron trigger (wrangler.toml): ping the relay so Render's free tier doesn't put it to sleep,
-  // otherwise pressing play on a series episode could wait a minute for it to wake.
+  // Cron trigger (wrangler.toml), every 10 minutes: background upkeep (A–Z sort names, smart rows).
+  // The relay is no longer kept awake around the clock; it's woken when someone uses Nuvio.
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
-    ctx.waitUntil(wakeRelay(env));
     // Fill in A–Z sort names for libraries imported before they existed (2,000 titles per run).
     if (env.TURSO_URL)
       ctx.waitUntil(

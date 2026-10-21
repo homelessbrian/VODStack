@@ -77,9 +77,42 @@ function parseExtra(extra: string | undefined) {
 }
 
 type Episode = { id: string; season: number; episode: number; title: string; ext: string; plot?: string; image?: string; released?: string };
+export type Ctx = { waitUntil(p: Promise<unknown>): void };
+const EPISODES_FRESH_SECONDS = 24 * 3600;
+/**
+ * Episode list for an Xtream series, remembered per library. Episode ids are the same for every
+ * login on the provider, so one fetch serves everyone. A list older than a day is still served
+ * right away and refreshed in the background, so opening a series rarely needs the relay.
+ */
+async function seriesEpisodes(env: Env, cfg: SourceConfig, seriesId: string, libraryId: string, ctx?: Ctx): Promise<Episode[]> {
+  const row = await env.DB.prepare('SELECT episodes_json,fetched_at FROM series_cache WHERE library_id=? AND series_id=?')
+    .bind(libraryId, seriesId)
+    .first<{ episodes_json: string; fetched_at: number }>();
+  const now = Math.floor(Date.now() / 1000);
+  const refresh = async () => {
+    const eps = await fetchEpisodes(env, cfg, seriesId);
+    if (eps.length)
+      await env.DB.prepare(
+        `INSERT INTO series_cache(library_id,series_id,episodes_json,fetched_at) VALUES(?,?,?,?)
+         ON CONFLICT(library_id,series_id) DO UPDATE SET episodes_json=excluded.episodes_json,fetched_at=excluded.fetched_at`,
+      )
+        .bind(libraryId, seriesId, JSON.stringify(eps), now)
+        .run();
+    return eps;
+  };
+  if (row) {
+    if (now - row.fetched_at > EPISODES_FRESH_SECONDS) {
+      const bg = refresh().catch(() => []);
+      if (ctx) ctx.waitUntil(bg);
+    }
+    return JSON.parse(row.episodes_json) as Episode[];
+  }
+  return refresh();
+}
 /** One provider request (with the viewer's login): the episode list for an Xtream series. */
-async function seriesEpisodes(env: Env, cfg: SourceConfig, seriesId: string): Promise<Episode[]> {
-  const r = await providerRequest(env, cfg, xtreamApiUrl(cfg, { action: 'get_series_info', series_id: seriesId }), 30000);
+async function fetchEpisodes(env: Env, cfg: SourceConfig, seriesId: string): Promise<Episode[]> {
+  // Allow time for the relay to wake if it was asleep.
+  const r = await providerRequest(env, cfg, xtreamApiUrl(cfg, { action: 'get_series_info', series_id: seriesId }), 70000);
   const data = (await r.json().catch(() => null)) as any;
   const groups = data?.episodes ? (Array.isArray(data.episodes) ? data.episodes : Object.values(data.episodes)) : [];
   const out: Episode[] = [];
@@ -112,7 +145,7 @@ function stream(url: string, library: string, detail: string) {
   };
 }
 
-export async function handleAddon(env: Env, path: string): Promise<Response | null> {
+export async function handleAddon(env: Env, path: string, ctx?: Ctx): Promise<Response | null> {
   const m = path.match(/^\/addon\/([^/]+)\/(manifest\.json|(catalog|meta|stream)\/(movie|series)\/([^/]+?)(?:\/([^/]+))?\.json)$/);
   if (!m) return null;
   const owner = await setupByAddonToken(env, m[1]);
@@ -314,7 +347,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     if (item.media_type === 'series') {
       if (lib.kind === 'xtream') {
         const cfg = await getLogin(env, setupId, lib.id);
-        const eps = cfg ? await seriesEpisodes(env, cfg, item.provider_item_id) : [];
+        const eps = cfg ? await seriesEpisodes(env, cfg, item.provider_item_id, lib.id, ctx) : [];
         meta.videos = eps.map((e) => ({
           id: `vodstack:${item.id}:ep:${e.id}:${e.ext.replace(/[^a-z0-9]/gi, '')}`,
           title: e.title,
@@ -370,7 +403,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       if (url) streams.push(stream(url, lib.name, r.cat));
     } else if (lib.kind === 'xtream' && tt[2]) {
       try {
-        const ep = (await seriesEpisodes(env, cfg, r.provider_item_id)).find((e) => e.season === Number(tt[2]) && e.episode === Number(tt[3]));
+        const ep = (await seriesEpisodes(env, cfg, r.provider_item_id, lib.id, ctx)).find((e) => e.season === Number(tt[2]) && e.episode === Number(tt[3]));
         if (ep) streams.push(stream(xtreamStreamUrl(cfg, 'series', ep.id, ep.ext), lib.name, `S${tt[2]} E${tt[3]}`));
       } catch {
         // Provider unreachable for this one.

@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -251,6 +251,16 @@ const MIGRATIONS: Record<number, string[]> = {
     // Shuffled rows: the shuffled title ids for the current 4-hour window, and which window that is.
     'ALTER TABLE catalogs ADD COLUMN shuffle_ids TEXT',
     'ALTER TABLE catalogs ADD COLUMN shuffle_at INTEGER',
+  ],
+  8: [
+    // Xtream series episode lists, fetched once per series and refreshed in the background daily.
+    `CREATE TABLE IF NOT EXISTS series_cache (
+      library_id TEXT NOT NULL,
+      series_id TEXT NOT NULL,
+      episodes_json TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (library_id, series_id)
+    ) WITHOUT ROWID`,
   ],
 };
 
