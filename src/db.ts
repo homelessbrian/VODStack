@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -201,6 +201,23 @@ const MIGRATIONS: Record<number, string[]> = {
       item_id INTEGER NOT NULL,
       PRIMARY KEY (term, item_id)
     ) WITHOUT ROWID`,
+  ],
+  2: [
+    // When a title disappeared from the provider (deleted 90 days later unless it comes back).
+    'ALTER TABLE vod_items ADD COLUMN removed_at INTEGER',
+    "UPDATE vod_items SET removed_at=CAST(strftime('%s','now') AS INTEGER) WHERE is_available=0 AND removed_at IS NULL",
+    // Merged rows: a row with is_merge=1 shows the titles of every category whose merged_into points
+    // at it. Titles stay in their original categories, so imports keep feeding the merged row.
+    'ALTER TABLE catalogs ADD COLUMN is_merge INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE catalogs ADD COLUMN merged_into INTEGER',
+    // When a category first appeared (unix seconds), for the "New" badge. NULL for older ones.
+    'ALTER TABLE catalogs ADD COLUMN created_at INTEGER',
+    // How a row orders its titles in Nuvio: 'az' (default) or 'recent' (newest first).
+    "ALTER TABLE catalogs ADD COLUMN title_order TEXT NOT NULL DEFAULT 'az'",
+    // Owner's row-management settings: { hideNew, hideRules: [...] }.
+    'ALTER TABLE libraries ADD COLUMN settings_json TEXT',
+    // Titles in import order within a category, for "newest first" rows (one write per title).
+    'CREATE INDEX IF NOT EXISTS vod_items_recent_idx ON vod_items(catalog_id)',
   ],
 };
 

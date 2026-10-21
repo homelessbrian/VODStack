@@ -157,7 +157,23 @@ export type Library = {
   last_refresh_status: string | null;
   stats_json: string | null;
   invite_encrypted: string | null;
+  settings_json: string | null;
+  created_at: string;
 };
+export type LibrarySettings = { hideNew: boolean; hideRules: string[] };
+export function librarySettings(lib: { settings_json: string | null }): LibrarySettings {
+  try {
+    const s = JSON.parse(lib.settings_json || '{}');
+    return { hideNew: !!s.hideNew, hideRules: Array.isArray(s.hideRules) ? s.hideRules.map(String) : [] };
+  } catch {
+    return { hideNew: false, hideRules: [] };
+  }
+}
+/** Does a category name match one of the owner's auto-hide words? (case-insensitive, anywhere in the name) */
+export function matchesHideRule(name: string, rules: string[]) {
+  const n = name.toLowerCase();
+  return rules.some((r) => r && n.includes(r.toLowerCase()));
+}
 /** The library a setup belongs to (as owner or member), or null. */
 export async function getLibrary(env: Env, setupId: string) {
   const lib = await env.DB.prepare(
@@ -382,12 +398,16 @@ export type CatalogView = {
   hidden: boolean;
   order: number;
   renamed: boolean;
+  isMerge: boolean;
+  mergedInto: number | null;
+  createdAt: number | null;
+  titleOrder: 'az' | 'recent';
 };
 /** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */
 export async function catalogsFor(env: Env, setupId: string, libraryId: string): Promise<CatalogView[]> {
   const rows = (
     await env.DB.prepare(
-      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,p.display_name,p.is_hidden,p.sort_order AS psort
+      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,p.display_name,p.is_hidden,p.sort_order AS psort
        FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.library_id=?`,
     )
       .bind(setupId, libraryId)
@@ -403,6 +423,10 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       hidden: !!r.is_hidden,
       order: r.psort ?? r.sort_order,
       renamed: !!r.display_name,
+      isMerge: !!r.is_merge,
+      mergedInto: r.merged_into ?? null,
+      createdAt: r.created_at ?? null,
+      titleOrder: (r.title_order === 'recent' ? 'recent' : 'az') as 'az' | 'recent',
     }))
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }

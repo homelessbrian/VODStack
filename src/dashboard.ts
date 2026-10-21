@@ -10,7 +10,7 @@ const CSS = String.raw`
 const PAGE_JS = String.raw`(function () {
   var root = document.getElementById('root');
   var topAction = document.getElementById('topAction');
-  var S = { tab: 'rows', data: null, filter: 'all', q: '', recovery: null };
+  var S = { tab: 'rows', data: null, filter: 'all', status: 'all', q: '', recovery: null };
   var invite = new URLSearchParams(location.search).get('invite');
 
   function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -138,33 +138,102 @@ const PAGE_JS = String.raw`(function () {
   }
 
   // ---------- rows ----------
+  function isNew(c) {
+    var lib = S.data.library;
+    var now = Date.now() / 1000;
+    return !!(c.createdAt && lib && lib.createdAt && c.createdAt > lib.createdAt + 3600 && now - c.createdAt < 14 * 86400);
+  }
+  var STATUS = {
+    all: function () { return true; },
+    shown: function (c) { return !c.hidden && !c.mergedInto && c.item_count > 0; },
+    hidden: function (c) { return c.hidden; },
+    merged: function (c) { return c.isMerge || c.mergedInto; },
+    new: isNew,
+    empty: function (c) { return !c.item_count; },
+  };
   function visibleRows() {
     var q = S.q.toLowerCase();
-    return S.data.catalogs.filter(function (c) { return (S.filter === 'all' || c.media_type === S.filter) && (!q || c.name.toLowerCase().indexOf(q) >= 0 || c.source_category_name.toLowerCase().indexOf(q) >= 0); });
+    return S.data.catalogs.filter(function (c) {
+      return (S.filter === 'all' || c.media_type === S.filter) && STATUS[S.status](c) &&
+        (!q || c.name.toLowerCase().indexOf(q) >= 0 || c.source_category_name.toLowerCase().indexOf(q) >= 0);
+    });
   }
   function rowsPage() {
     var cats = S.data.catalogs;
     if (!cats.length) return '<div class="panel"><div class="empty"><strong>No rows yet</strong>' + 'Import your provider on the Library page.' + '</div></div>';
-    var shown = cats.filter(function (c) { return !c.hidden && c.item_count > 0; }).length;
-    var titles = cats.reduce(function (t, c) { return t + c.item_count; }, 0);
+    var shown = cats.filter(function (c) { return !c.hidden && c.item_count > 0 && !c.mergedInto; }).length;
+    var titles = cats.reduce(function (t, c) { return t + (c.isMerge ? 0 : c.item_count); }, 0);
     return '<div class="page-head"><div><h2>Rows</h2><div class="muted">The rows everyone in your library sees in Nuvio. Only you can change them.</div></div></div>' +
       '<div class="cards"><div class="stat"><strong>' + n(cats.length) + '</strong><span>Categories</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
-      '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' +
-      '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:150px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select></div>' +
-      '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button></div><div id="msg"></div><div id="rowList">' + rowList() + '</div></div>';
+      '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + rulesPanel() +
+      '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
+      '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
+  }
+  function rulesPanel() {
+    var st = S.data.library.settings || { hideNew: false, hideRules: [] };
+    return '<div class="panel"><h3>Auto-hide</h3><p>Categories whose name contains any of these words are hidden automatically, including new ones from future refreshes. Separate words with commas.</p>' +
+      '<input id="hideRules" placeholder="e.g. ARABIC, XXX, |FR|, ADULT" value="' + esc(st.hideRules.join(', ')) + '">' +
+      '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="hideNew" style="width:auto"' + (st.hideNew ? ' checked' : '') + '> New categories from the provider start hidden (they get a “New” badge so you can review them)</label>' +
+      '<div class="actions"><button class="small" id="saveRules">Save</button><button class="small primary" id="applyRules">Save and hide matching now</button></div><div id="msgRules"></div></div>';
+  }
+  function rowHtml(c, indent) {
+    var cats = S.data.catalogs;
+    var parent = c.mergedInto ? find(c.mergedInto) : null;
+    var members = c.isMerge ? cats.filter(function (m) { return m.mergedInto === c.id; }) : [];
+    var meta = '<span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' +
+      (c.isMerge ? '<span class="pill">Merged</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
+      (c.renamed && !c.isMerge ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + n(c.item_count) + ' titles · ' +
+      (parent ? 'Shown inside “' + esc(parent.name) + '”' : c.item_count ? (c.hidden ? 'Hidden' : 'Shown') : 'Empty');
+    var buttons = parent
+      ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
+      : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
+        (c.isMerge ? '<button class="small" data-unmerge="' + c.id + '">Unmerge</button>' : '') +
+        '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>' +
+        '<button class="small" data-move="' + c.id + '" data-dir="top" title="Move to top">⤒</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button><button class="small" data-move="' + c.id + '" data-dir="bottom" title="Move to bottom">⤓</button>';
+    var grip = indent ? '' : '<span data-drag="' + c.id + '" title="Drag to reorder" style="cursor:grab;touch-action:none;user-select:none;color:var(--muted);font-size:18px;line-height:1;padding:2px 4px">⠿</span>';
+    var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '><div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta">' + meta + '</div></div></div>' +
+      '<div class="catalog-actions"><button class="small" data-view="' + c.id + '">View</button>' + buttons + '</div></div>';
+    if (indent) return row;
+    return '<div data-group="' + c.id + '">' + row + members.map(function (m) { return rowHtml(m, true); }).join('') + '</div>';
   }
   function rowList() {
     var list = visibleRows();
     if (!list.length) return '<div class="empty">No categories match.</div>';
-    return list.map(function (c) {
-      return '<div class="catalog ' + (c.hidden || !c.item_count ? 'hidden' : '') + '"><div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta"><span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' + (c.renamed ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + n(c.item_count) + ' titles · ' + (c.item_count ? (c.hidden ? 'Hidden' : 'Shown') : 'Empty') + '</div></div>' +
-        '<div class="catalog-actions"><button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button></div></div>';
-    }).join('');
+    // Categories inside a merged row are listed under it (unless the merged row itself is filtered out).
+    var listed = {};
+    list.forEach(function (c) { listed[c.id] = true; });
+    return list.filter(function (c) { return !c.mergedInto || !listed[c.mergedInto]; }).map(function (c) { return rowHtml(c, false); }).join('');
   }
   function wireRows() {
     var type = el('rowType'); if (!type) return;
     type.value = S.filter;
     type.onchange = function () { S.filter = type.value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    el('rowStatus').value = S.status;
+    el('rowStatus').onchange = function () { S.status = el('rowStatus').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    el('sortRows').onchange = function () {
+      var how = el('sortRows').value;
+      if (!how) return;
+      if (!confirm('Re-order all rows this way? Your current order will be replaced.')) { el('sortRows').value = ''; return; }
+      var top = topRows().slice().sort(SORTS[how]);
+      saveTopOrder(top);
+    };
+    el('pickAll').onclick = function () {
+      S.picked = S.picked || {};
+      visibleRows().forEach(function (c) { S.picked[c.id] = true; });
+      el('rowList').innerHTML = rowList(); wireRowButtons();
+    };
+    var saveRules = function (apply) {
+      return async function () {
+        var words = el('hideRules').value.split(',').map(function (w) { return w.trim(); }).filter(Boolean);
+        try {
+          var r = await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, apply: apply } });
+          await load();
+          say('msgRules', apply ? 'Saved. ' + n(r.hidden) + ' categories hidden.' : 'Saved.', true);
+        } catch (e) { say('msgRules', e.message); }
+      };
+    };
+    el('saveRules').onclick = saveRules(false);
+    el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
     function bulk(hidden) {
       return async function () {
@@ -176,13 +245,129 @@ const PAGE_JS = String.raw`(function () {
         } catch (e) { say('msg', e.message); }
       };
     }
+    el('mergeBtn').onclick = async function () {
+      var ids = Object.keys(S.picked || {}).filter(function (k) { return S.picked[k]; }).map(Number);
+      var rows = ids.map(find).filter(Boolean);
+      var target = rows.filter(function (c) { return c.isMerge; })[0];
+      if (rows.length < 2) return say('msg', 'Tick at least two categories first.');
+      var name = target ? target.name : prompt('Name for the merged row:', rows.map(function (c) { return c.name; }).join(' + ').slice(0, 80));
+      if (name === null) return;
+      try { await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; await load(); say('msg', 'Merged.', true); }
+      catch (e) { say('msg', e.message); }
+    };
     el('showAll').onclick = bulk(false);
     el('hideAll').onclick = bulk(true);
     wireRowButtons();
   }
+  // Save a new top-level order. Categories inside merged rows keep following their merged row.
+  async function saveTopOrder(top) {
+    var inner = S.data.catalogs.filter(function (c) { return c.mergedInto; });
+    S.data.catalogs = top.concat(inner);
+    el('rowList').innerHTML = rowList(); wireRowButtons();
+    try { await api('/api/catalog-order', { method: 'POST', body: { ids: S.data.catalogs.map(function (c) { return c.id; }) } }); }
+    catch (e) { say('msg', e.message); load(); }
+  }
+  function topRows() { return S.data.catalogs.filter(function (c) { return !c.mergedInto; }); }
+  var SORTS = {
+    az: function (a, b) { return a.name.localeCompare(b.name); },
+    za: function (a, b) { return b.name.localeCompare(a.name); },
+    most: function (a, b) { return b.item_count - a.item_count; },
+    fewest: function (a, b) { return a.item_count - b.item_count; },
+    movie: function (a, b) { return (a.media_type === 'movie' ? 0 : 1) - (b.media_type === 'movie' ? 0 : 1); },
+    series: function (a, b) { return (a.media_type === 'series' ? 0 : 1) - (b.media_type === 'series' ? 0 : 1); },
+  };
+  // Drag a row by its handle (mouse or touch). Rows you can't see because of a filter keep their places.
+  function wireDrag() {
+    document.querySelectorAll('[data-drag]').forEach(function (h) {
+      h.onpointerdown = function (e) {
+        e.preventDefault();
+        var list = el('rowList');
+        var group = h.closest('[data-group]');
+        group.style.opacity = '0.6';
+        h.style.cursor = 'grabbing';
+        try { h.setPointerCapture(e.pointerId); } catch (x) {}
+        var move = function (ev) {
+          var groups = Array.prototype.slice.call(list.querySelectorAll(':scope > [data-group]'));
+          var before = null;
+          for (var k = 0; k < groups.length; k++) {
+            if (groups[k] === group) continue;
+            var r = groups[k].getBoundingClientRect();
+            if (ev.clientY < r.top + r.height / 2) { before = groups[k]; break; }
+          }
+          if (before !== group.nextSibling) list.insertBefore(group, before);
+        };
+        var up = function () {
+          h.removeEventListener('pointermove', move);
+          h.removeEventListener('pointerup', up);
+          h.removeEventListener('pointercancel', up);
+          group.style.opacity = '';
+          h.style.cursor = 'grab';
+          var shown = Array.prototype.slice.call(list.querySelectorAll(':scope > [data-group]')).map(function (g) { return find(g.dataset.group); });
+          var shownSet = {};
+          shown.forEach(function (c) { shownSet[c.id] = true; });
+          var k = 0;
+          var top = topRows().map(function (c) { return shownSet[c.id] ? shown[k++] : c; });
+          saveTopOrder(top);
+        };
+        h.addEventListener('pointermove', move);
+        h.addEventListener('pointerup', up);
+        h.addEventListener('pointercancel', up);
+      };
+    });
+  }
+  // Look inside a row: posters, years and whether TMDB matched them.
+  async function openViewer(c, skip, q) {
+    var v = el('viewer');
+    v.innerHTML = '<div class="panel" style="margin:12px 0"><div class="row"><h3 style="margin:0">' + esc(c.name) + '</h3><button class="small" id="closeViewer" style="flex:0 0 auto">Close</button></div><div class="row" style="margin-top:10px"><input id="viewerSearch" placeholder="Find a title in this row…" value="' + esc(q || '') + '"></div><div id="viewerList" class="help" style="margin-top:10px">Loading…</div></div>';
+    el('closeViewer').onclick = function () { v.innerHTML = ''; };
+    var timer = null;
+    el('viewerSearch').oninput = function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { openViewer(c, 0, el('viewerSearch').value.trim()); }, 400);
+    };
+    if (q) { var box = el('viewerSearch'); box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    if (v.scrollIntoView) v.scrollIntoView({ block: 'nearest' });
+    try {
+      var d = await api('/api/catalogs/' + c.id + '/titles?skip=' + skip + (q ? '&q=' + encodeURIComponent(q) : ''));
+      var items = d.titles.map(function (t) {
+        var img = t.tmdb_poster || t.poster_url;
+        var status = t.imdb_id ? '<span style="color:var(--green)">Full metadata</span>' : t.tmdb_match_status === 'pending' ? 'Waiting for TMDB' : t.tmdb_match_status === 'skip' ? 'Episode' : 'Provider info only';
+        return '<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">' +
+          (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" style="width:40px;height:60px;object-fit:cover;border-radius:4px;background:var(--panel2)">' : '<div style="width:40px;height:60px;border-radius:4px;background:var(--panel2)"></div>') +
+          '<div><div style="color:var(--text);font-weight:600">' + esc(t.title) + '</div><div>' + (t.year ? t.year + ' · ' : '') + status + '</div></div></div>';
+      }).join('');
+      el('viewerList').innerHTML = (items || '<div class="empty">Nothing here' + (q ? ' matches “' + esc(q) + '”' : '') + '.</div>') +
+        '<div class="actions">' + (skip > 0 ? '<button class="small" id="viewerPrev">← Previous</button>' : '') + (d.more ? '<button class="small" id="viewerNext">Next 100 →</button>' : '') + '</div>';
+      if (el('viewerPrev')) el('viewerPrev').onclick = function () { openViewer(c, Math.max(0, skip - 100), q); };
+      if (el('viewerNext')) el('viewerNext').onclick = function () { openViewer(c, skip + 100, q); };
+    } catch (e) { el('viewerList').textContent = e.message; }
+  }
   function find(id) { return S.data.catalogs.filter(function (c) { return String(c.id) === String(id); })[0]; }
   // Changes are applied in the page directly, so the dashboard doesn't have to reload everything.
   function wireRowButtons() {
+    wireDrag();
+    document.querySelectorAll('[data-view]').forEach(function (b) {
+      b.onclick = function () { openViewer(find(b.dataset.view), 0, ''); };
+    });
+    document.querySelectorAll('[data-pick]').forEach(function (b) {
+      b.onchange = function () { S.picked = S.picked || {}; S.picked[b.dataset.pick] = b.checked; };
+    });
+    document.querySelectorAll('[data-order]').forEach(function (b) {
+      b.onclick = async function () {
+        var c = find(b.dataset.order);
+        var next = c.titleOrder === 'recent' ? 'az' : 'recent';
+        try { await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { title_order: next } }); c.titleOrder = next; el('rowList').innerHTML = rowList(); wireRowButtons(); }
+        catch (e) { say('msg', e.message); }
+      };
+    });
+    document.querySelectorAll('[data-unmerge]').forEach(function (b) {
+      b.onclick = async function () {
+        var c = find(b.dataset.unmerge);
+        if (c.isMerge && !confirm('Split “' + c.name + '” back into its categories?')) return;
+        try { await api('/api/catalogs/' + c.id + '/unmerge', { method: 'POST', body: {} }); await load(); }
+        catch (e) { say('msg', e.message); }
+      };
+    });
     document.querySelectorAll('[data-rename]').forEach(function (b) {
       b.onclick = async function () {
         var c = find(b.dataset.rename);
@@ -204,14 +389,18 @@ const PAGE_JS = String.raw`(function () {
     });
     document.querySelectorAll('[data-move]').forEach(function (b) {
       b.onclick = async function () {
-        var cats = S.data.catalogs;
-        var i = cats.indexOf(find(b.dataset.move));
-        var j = i + Number(b.dataset.dir);
-        if (j < 0 || j >= cats.length) return;
-        var t = cats[i]; cats[i] = cats[j]; cats[j] = t;
-        el('rowList').innerHTML = rowList(); wireRowButtons();
-        try { await api('/api/catalog-order', { method: 'POST', body: { ids: cats.map(function (c) { return c.id; }) } }); }
-        catch (e) { say('msg', e.message); load(); }
+        var top = topRows();
+        var i = top.indexOf(find(b.dataset.move));
+        var dir = b.dataset.dir;
+        if (dir === 'top' || dir === 'bottom') {
+          var item = top.splice(i, 1)[0];
+          if (dir === 'top') top.unshift(item); else top.push(item);
+        } else {
+          var j = i + Number(dir);
+          if (j < 0 || j >= top.length) return;
+          var t = top[i]; top[i] = top[j]; top[j] = t;
+        }
+        saveTopOrder(top);
       };
     });
   }

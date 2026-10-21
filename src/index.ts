@@ -23,6 +23,8 @@ import {
   encrypt,
   catalogsFor,
   getLibrary,
+  librarySettings,
+  matchesHideRule,
   getLogin,
   hideSecrets,
   html,
@@ -103,6 +105,23 @@ async function saveLogin(env: Env, setupId: string, libraryId: string, cfg: Sour
     .run();
 }
 
+const PURGE_AFTER_DAYS = 90;
+/** Delete titles the provider removed more than 90 days ago (and their search entries). */
+async function purgeRemoved(env: Env, libraryId: string) {
+  const cutoff = Math.floor(Date.now() / 1000) - PURGE_AFTER_DAYS * 86400;
+  const ids = (
+    await env.DB.prepare('SELECT id FROM vod_items WHERE library_id=? AND is_available=0 AND removed_at<? LIMIT 5000')
+      .bind(libraryId, cutoff)
+      .raw<[number]>()
+  ).map((r) => r[0]);
+  if (!ids.length) return 0;
+  const list = JSON.stringify(ids);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM search_terms WHERE item_id IN (SELECT value FROM json_each(?))').bind(list),
+    env.DB.prepare('DELETE FROM vod_items WHERE id IN (SELECT value FROM json_each(?1)) AND library_id=?2').bind(list, libraryId),
+  ]);
+  return ids.length;
+}
 async function libraryStats(env: Env, libraryId: string) {
   const rows = (
     await env.DB.prepare(
@@ -204,6 +223,8 @@ async function route(request: Request, env: Env): Promise<Response> {
             lastRefreshAt: lib.last_refresh_at,
             status: lib.last_refresh_status,
             stats: lib.stats_json ? JSON.parse(lib.stats_json) : null,
+            settings: lib.isOwner ? librarySettings(lib) : undefined,
+            createdAt: Math.floor(Date.parse(lib.created_at.replace(' ', 'T') + 'Z') / 1000) || null,
           }
         : null,
       login: login
@@ -250,6 +271,31 @@ async function route(request: Request, env: Env): Promise<Response> {
       env.DB.prepare('DELETE FROM libraries WHERE id=?').bind(lib.id),
     ]);
     return json({ ok: true });
+  }
+  if (method === 'POST' && path === '/api/library/settings') {
+    // Row-management settings. With apply=true, also hide existing categories that match the words.
+    const lib = await ownedLibrary(env, setupId);
+    const hideRules = (Array.isArray(body.hideRules) ? body.hideRules : [])
+      .map((w: unknown) => str(w, 60))
+      .filter(Boolean)
+      .slice(0, 100);
+    const settings = { hideNew: !!body.hideNew, hideRules };
+    await env.DB.prepare('UPDATE libraries SET settings_json=? WHERE id=?').bind(JSON.stringify(settings), lib.id).run();
+    let hidden = 0;
+    if (body.apply && hideRules.length) {
+      const ids = (await catalogsFor(env, setupId, lib.id))
+        .filter((c) => !c.isMerge && !c.hidden && matchesHideRule(c.source_category_name, hideRules))
+        .map((c) => c.id);
+      if (ids.length)
+        await env.DB.prepare(
+          `INSERT INTO catalog_prefs(setup_id,catalog_id,is_hidden) SELECT ?1,value,1 FROM json_each(?2) WHERE true
+           ON CONFLICT(setup_id,catalog_id) DO UPDATE SET is_hidden=1`,
+        )
+          .bind(setupId, JSON.stringify(ids))
+          .run();
+      hidden = ids.length;
+    }
+    return json({ ok: true, hidden });
   }
   if (method === 'POST' && path === '/api/library/invite') {
     // A new invite link; the previous one stops working. People who already joined are unaffected.
@@ -301,16 +347,33 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (t && c) clean.push({ t, c, n: str(x?.n, 150) || c });
     }
     const top = await env.DB.prepare('SELECT COALESCE(MAX(sort_order),-1) AS m FROM catalogs WHERE library_id=?').bind(lib.id).first<{ m: number }>();
+    const now = Math.floor(Date.now() / 1000);
     const r = await env.DB.prepare(
-      `INSERT INTO catalogs(library_id,source_category_id,source_category_name,media_type,sort_order)
-       SELECT ?1,json_extract(j.value,'$.c'),json_extract(j.value,'$.n'),json_extract(j.value,'$.t'),?3+1+j.key
+      `INSERT INTO catalogs(library_id,source_category_id,source_category_name,media_type,sort_order,created_at)
+       SELECT ?1,json_extract(j.value,'$.c'),json_extract(j.value,'$.n'),json_extract(j.value,'$.t'),?3+1+j.key,?4
        FROM json_each(?2) j WHERE true
        ON CONFLICT(library_id,media_type,source_category_id) DO UPDATE SET source_category_name=excluded.source_category_name
-       WHERE catalogs.source_category_name IS NOT excluded.source_category_name`,
+       WHERE catalogs.source_category_name IS NOT excluded.source_category_name
+       RETURNING id,source_category_name,created_at`,
     )
-      .bind(lib.id, JSON.stringify(clean), top?.m ?? -1)
-      .run();
-    return json({ ok: true, written: r.meta.changes });
+      .bind(lib.id, JSON.stringify(clean), top?.m ?? -1, now)
+      .all<{ id: number; source_category_name: string; created_at: number | null }>();
+    // Categories that just appeared: hide them if they match an auto-hide word, or if the owner
+    // chose "new categories start hidden" (not on the very first import, which would hide everything).
+    const settings = librarySettings(lib);
+    const firstImport = (top?.m ?? -1) < 0;
+    const toHide = r.results
+      .filter((c) => c.created_at === now)
+      .filter((c) => matchesHideRule(c.source_category_name, settings.hideRules) || (settings.hideNew && !firstImport))
+      .map((c) => c.id);
+    if (toHide.length)
+      await env.DB.prepare(
+        `INSERT INTO catalog_prefs(setup_id,catalog_id,is_hidden) SELECT ?1,value,1 FROM json_each(?2) WHERE true
+         ON CONFLICT(setup_id,catalog_id) DO UPDATE SET is_hidden=1`,
+      )
+        .bind(setupId, JSON.stringify(toHide))
+        .run();
+    return json({ ok: true, written: r.results.length, hidden: toHide.length });
   }
   if (method === 'POST' && path === '/api/library/import/items') {
     const lib = await ownedLibrary(env, setupId);
@@ -358,7 +421,7 @@ async function route(request: Request, env: Env): Promise<Response> {
        ${JOIN} WHERE true
        ON CONFLICT(catalog_id,provider_item_id) DO UPDATE SET
          title=excluded.title,year=excluded.year,poster_url=excluded.poster_url,overview=excluded.overview,
-         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,
+         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,removed_at=NULL,
          tmdb_match_status=CASE WHEN ${RESET} THEN excluded.tmdb_match_status ELSE vod_items.tmdb_match_status END,
          tmdb_id=CASE WHEN ${RESET} THEN excluded.tmdb_id ELSE vod_items.tmdb_id END,
          imdb_id=CASE WHEN ${RESET} THEN NULL ELSE vod_items.imdb_id END,
@@ -387,7 +450,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n));
     if (!ids.length || ids.length > 5000) return json({ error: 'Send between 1 and 5000 ids.' }, 400);
     const r = await env.DB.prepare(
-      'UPDATE vod_items SET is_available=0 WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?1 AND is_available=1',
+      "UPDATE vod_items SET is_available=0,removed_at=CAST(strftime('%s','now') AS INTEGER) WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?1 AND is_available=1",
     )
       .bind(lib.id, JSON.stringify(ids))
       .run();
@@ -414,10 +477,18 @@ async function route(request: Request, env: Env): Promise<Response> {
     )
       .bind(lib.id)
       .run();
-    await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
-      .bind(str(body.status, 200) || 'OK', lib.id)
+    // Merged rows count the titles of the categories merged into them.
+    await env.DB.prepare(
+      `UPDATE catalogs SET item_count=COALESCE((SELECT SUM(m.item_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
+       WHERE library_id=? AND is_merge=1`,
+    )
+      .bind(lib.id)
       .run();
-    return json({ ok: true, stats: await libraryStats(env, lib.id) });
+    const purged = await purgeRemoved(env, lib.id);
+    await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
+      .bind((str(body.status, 180) || 'OK') + (purged ? ` · ${purged} long-gone titles cleaned up` : ''), lib.id)
+      .run();
+    return json({ ok: true, purged, stats: await libraryStats(env, lib.id) });
   }
 
   // ---- everyone: their own rows ----
@@ -428,6 +499,10 @@ async function route(request: Request, env: Env): Promise<Response> {
       ? await env.DB.prepare('SELECT id FROM catalogs WHERE id=? AND library_id=?').bind(Number(catalogMatch[1]), lib.id).first()
       : null;
     if (!cat) return json({ error: 'Catalog not found.' }, 404);
+    if (body.title_order === 'az' || body.title_order === 'recent') {
+      await env.DB.prepare('UPDATE catalogs SET title_order=? WHERE id=? AND library_id=?').bind(body.title_order, Number(catalogMatch[1]), lib.id).run();
+      return json({ ok: true });
+    }
     const name = typeof body.display_name === 'string' ? body.display_name.trim().slice(0, 150) : undefined;
     const hidden = typeof body.is_hidden === 'boolean' ? (body.is_hidden ? 1 : 0) : undefined;
     if (name === undefined && hidden === undefined) return json({ error: 'No supported changes supplied.' }, 400);
@@ -439,6 +514,92 @@ async function route(request: Request, env: Env): Promise<Response> {
     )
       .bind(setupId, Number(catalogMatch[1]), name || null, hidden ?? null, name !== undefined ? 1 : 0, hidden !== undefined ? 1 : 0)
       .run();
+    return json({ ok: true });
+  }
+  // ---- look inside a row (owner only): 100 titles per page, optionally filtered ----
+  const titlesMatch = path.match(/^\/api\/catalogs\/(\d+)\/titles$/);
+  if (method === 'GET' && titlesMatch) {
+    const lib = await ownedLibrary(env, setupId);
+    const id = Number(titlesMatch[1]);
+    const cat = await env.DB.prepare('SELECT id,is_merge FROM catalogs WHERE id=? AND library_id=?').bind(id, lib.id).first<{ id: number; is_merge: number }>();
+    if (!cat) return json({ error: 'Row not found.' }, 404);
+    const skip = Math.max(0, Math.min(50000, Number(url.searchParams.get('skip')) || 0));
+    const q = str(url.searchParams.get('q'), 60).toLowerCase();
+    const ids = cat.is_merge
+      ? (await env.DB.prepare('SELECT id FROM catalogs WHERE merged_into=? AND library_id=?').bind(id, lib.id).raw<[number]>()).map((r) => r[0])
+      : [id];
+    const COLS = 'id,title,year,poster_url,tmdb_poster,imdb_id,tmdb_match_status,is_available,catalog_id';
+    const lists = await Promise.all(
+      ids.map((cid) =>
+        (q
+          ? env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 AND lower(title) LIKE ? ORDER BY title LIMIT ?`).bind(cid, '%' + q + '%', skip + 101)
+          : env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 ORDER BY title LIMIT ?`).bind(cid, skip + 101)
+        )
+          .all<any>()
+          .then((r) => r.results),
+      ),
+    );
+    const all = lists.flat().sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+    return json({ titles: all.slice(skip, skip + 100), more: all.length > skip + 100 });
+  }
+
+  // ---- merged rows (owner only) ----
+  // A merged row only points at its categories; titles never move, so new titles in any of
+  // the original categories show up in the merged row automatically after each refresh.
+  const recountMerges = (libraryId: string) =>
+    env.DB.prepare(
+      `UPDATE catalogs SET item_count=COALESCE((SELECT SUM(m.item_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
+       WHERE library_id=? AND is_merge=1`,
+    ).bind(libraryId);
+  if (method === 'POST' && path === '/api/merges') {
+    const lib = await ownedLibrary(env, setupId);
+    const all = await catalogsFor(env, setupId, lib.id);
+    const byId = new Map(all.map((c) => [c.id, c]));
+    const picked = [...new Set<number>((Array.isArray(body.ids) ? body.ids : []).map(Number))].map((i) => byId.get(i)).filter(Boolean) as typeof all;
+    const targets = picked.filter((c) => c.isMerge);
+    const members = picked.filter((c) => !c.isMerge);
+    if (targets.length > 1) return json({ error: 'Pick at most one merged row to add to.' }, 400);
+    if (!members.length || (!targets.length && members.length < 2))
+      return json({ error: 'Pick at least two categories to merge (or a merged row plus the categories to add to it).' }, 400);
+    if (new Set(picked.map((c) => c.media_type)).size > 1) return json({ error: 'Movies and series can’t be merged together.' }, 400);
+    let target = targets[0]?.id;
+    if (!target) {
+      const name = str(body.name, 150) || members.map((m) => m.name).join(' + ').slice(0, 150);
+      const row = await env.DB.prepare(
+        `INSERT INTO catalogs(library_id,media_type,source_category_id,source_category_name,item_count,sort_order,is_merge)
+         VALUES(?,?,?,?,0,?,1) RETURNING id`,
+      )
+        .bind(lib.id, members[0].media_type, 'merge:' + uuid(), name, Math.min(...members.map((m) => m.order)))
+        .first<{ id: number }>();
+      target = row!.id;
+    }
+    await env.DB.batch([
+      env.DB.prepare('UPDATE catalogs SET merged_into=?1 WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?3 AND is_merge=0').bind(
+        target,
+        JSON.stringify(members.map((m) => m.id)),
+        lib.id,
+      ),
+      recountMerges(lib.id),
+      // A merged row left with no categories (because they moved here) is removed.
+      env.DB.prepare('DELETE FROM catalogs WHERE library_id=? AND is_merge=1 AND id NOT IN (SELECT merged_into FROM catalogs WHERE merged_into IS NOT NULL)').bind(lib.id),
+    ]);
+    return json({ ok: true, id: target });
+  }
+  const unmergeMatch = path.match(/^\/api\/catalogs\/(\d+)\/unmerge$/);
+  if (method === 'POST' && unmergeMatch) {
+    // On a merged row: split it back into its categories. On a category: take it out of its merged row.
+    const lib = await ownedLibrary(env, setupId);
+    const id = Number(unmergeMatch[1]);
+    const cat = await env.DB.prepare('SELECT id,is_merge FROM catalogs WHERE id=? AND library_id=?').bind(id, lib.id).first<{ id: number; is_merge: number }>();
+    if (!cat) return json({ error: 'Row not found.' }, 404);
+    await env.DB.batch([
+      cat.is_merge
+        ? env.DB.prepare('UPDATE catalogs SET merged_into=NULL WHERE merged_into=? AND library_id=?').bind(id, lib.id)
+        : env.DB.prepare('UPDATE catalogs SET merged_into=NULL WHERE id=? AND library_id=?').bind(id, lib.id),
+      recountMerges(lib.id),
+      env.DB.prepare('DELETE FROM catalog_prefs WHERE catalog_id IN (SELECT id FROM catalogs WHERE library_id=?1 AND is_merge=1 AND id NOT IN (SELECT merged_into FROM catalogs WHERE merged_into IS NOT NULL))').bind(lib.id),
+      env.DB.prepare('DELETE FROM catalogs WHERE library_id=? AND is_merge=1 AND id NOT IN (SELECT merged_into FROM catalogs WHERE merged_into IS NOT NULL)').bind(lib.id),
+    ]);
     return json({ ok: true });
   }
   if (method === 'POST' && path === '/api/catalogs/bulk') {

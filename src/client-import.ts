@@ -164,6 +164,10 @@ window.VODImport = (function () {
       if (!cats[key]) cats[key] = { t: t, c: id.slice(0, 200), n: names[key] || (id === 'uncategorized' ? 'Uncategorized' : 'Category ' + id) };
       return cats[key].c;
     }
+    // Save oldest first, so "newest first" rows match when titles were added to the provider.
+    function byAdded(key) { return function (a, b) { return (Number(a[key]) || 0) - (Number(b[key]) || 0); }; }
+    if (Array.isArray(movies)) movies.sort(byAdded('added'));
+    if (Array.isArray(series)) series.sort(byAdded('last_modified'));
     if (Array.isArray(movies)) movies.forEach(function (x) {
       var p = str(x.stream_id); if (!p) return;
       var ext = str(x.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'mp4';

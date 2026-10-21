@@ -40,3 +40,17 @@ with TMDB **once**, and shared. The owner also decides the rows (names, order, h
 On the Library page, create an invite link and send it to family on the same provider. They open
 it, enter **their own** Xtream login or M3U link, and get **their own** Nuvio link on the same page.
 Their playback uses their own account. They see the rows exactly as the owner set them up.
+
+## Managing rows (owner)
+
+On the **Rows** page:
+- **Hide/Show**, **Rename**, drag the **⠿** handle (or use ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
+- **View** a row to see its titles, with posters and whether TMDB matched them.
+- **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.
+- **Merge**: tick categories and press **Merge selected**. The merged row always shows everything in its
+  categories, so new titles from the provider appear in it automatically. **Unmerge** splits it back.
+- **Auto-hide**: words like `ARABIC, XXX` hide matching categories, including future ones. Optionally,
+  new categories start hidden and get a **New** badge.
+
+Titles the provider removes are deleted automatically 90 days later (they come back with their
+TMDB match if the provider re-adds them before then).

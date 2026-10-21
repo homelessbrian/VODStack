@@ -121,8 +121,8 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   const extra = parseExtra(m[6]);
 
   if (m[2] === 'manifest.json') {
-    // Hidden and empty categories are left out, so Nuvio doesn't request rows nobody sees.
-    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && c.item_count > 0) : [];
+    // Hidden, empty and merged-away categories are left out, so Nuvio doesn't request rows nobody sees.
+    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && c.item_count > 0 && !c.mergedInto) : [];
     return cached(
       {
         id: 'com.vodstack.addon',
@@ -162,11 +162,13 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
           .all<ItemRow>()
       ).results;
       // Leave out categories the library owner hid (a tiny read: only the owner's changed rows).
-      const hidden = new Set(
-        (
-          await env.DB.prepare('SELECT catalog_id FROM catalog_prefs WHERE setup_id=? AND is_hidden=1').bind(lib.owner_setup_id).raw<[number]>()
-        ).map((r) => r[0]),
-      );
+      const [hiddenRows, mergedRows] = await Promise.all([
+        env.DB.prepare('SELECT catalog_id FROM catalog_prefs WHERE setup_id=? AND is_hidden=1').bind(lib.owner_setup_id).raw<[number]>(),
+        env.DB.prepare('SELECT id,merged_into FROM catalogs WHERE library_id=? AND merged_into IS NOT NULL').bind(lib.id).raw<[number, number]>(),
+      ]);
+      const hiddenSet = new Set(hiddenRows.map((r) => r[0]));
+      const mergedTo = new Map(mergedRows.map((r) => [r[0], r[1]]));
+      const hidden = { has: (catalogId: number) => hiddenSet.has(mergedTo.get(catalogId) ?? catalogId) };
       const rank = (x: ItemRow) => {
         const t = norm(displayTitle(x.title));
         return (t === q ? 0 : t.startsWith(q) ? 1 : 2) * 2 + (x.imdb_id ? 0 : 1);
@@ -176,15 +178,39 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     }
     const catalogId = Number(id.replace(/^vodstack_/, ''));
     const cat = await env.DB.prepare(
-      'SELECT c.id,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
+      'SELECT c.id,c.is_merge,c.title_order,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
     )
       .bind(lib.owner_setup_id, catalogId, lib.id)
-      .first<{ id: number; is_hidden: number | null }>();
+      .first<{ id: number; is_merge: number; title_order: string; is_hidden: number | null }>();
     if (!cat || cat.is_hidden) return json({ metas: [] });
     const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));
+    // "Newest first" walks the (catalog_id) index backwards; A–Z walks (catalog_id, title).
+    const recent = cat.title_order === 'recent';
+    const ORDER = recent ? 'ORDER BY v.id DESC' : 'ORDER BY v.title';
+    if (cat.is_merge) {
+      // Read the first skip+100 titles of each merged category (index order), then interleave them.
+      const members = (
+        await env.DB.prepare('SELECT id FROM catalogs WHERE merged_into=? AND library_id=?').bind(catalogId, lib.id).raw<[number]>()
+      ).map((r) => r[0]);
+      const lists = await Promise.all(
+        members.map((mid) =>
+          env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ${ORDER} LIMIT ?`)
+            .bind(mid, skip + PAGE)
+            .all<ItemRow>()
+            .then((r) => r.results),
+        ),
+      );
+      const merged = dedupe(
+        lists
+          .flat()
+          .sort((a, b) => (recent ? b.id - a.id : a.title < b.title ? -1 : a.title > b.title ? 1 : 0))
+          .map(metaPreview),
+      );
+      return cached({ metas: merged.slice(skip, skip + PAGE) }, 1800);
+    }
     // Walks the (catalog_id, title) index: reads only the titles on this page (plus any skipped).
     const rows = (
-      await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ORDER BY v.title LIMIT ? OFFSET ?`)
+      await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ${ORDER} LIMIT ? OFFSET ?`)
         .bind(catalogId, PAGE, skip)
         .all<ItemRow>()
     ).results;
