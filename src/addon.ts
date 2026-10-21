@@ -10,8 +10,7 @@
 // search terms, and responses carry cache headers so players can reuse them.
 import {
   catalogsFor,
-  HAS_METADATA,
-  onlyMatchedActive,
+  visibleFilter,
   getLibrary,
   getLogin,
   json,
@@ -122,13 +121,13 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     id = decodeURIComponent(id);
   } catch {}
   const extra = parseExtra(m[6]);
-  // Owner's choice: only titles with full metadata reach Nuvio (on by default).
-  const onlyMatched = !!lib && onlyMatchedActive(lib);
-  const META = onlyMatched ? ` AND ${HAS_METADATA}` : '';
+  // The owner's "What family sees" switches (full metadata only, English only, …).
+  const META = lib ? visibleFilter(lib) : '';
+  const filtered = META !== '';
 
   if (m[2] === 'manifest.json') {
     // Hidden, empty and merged-away categories are left out, so Nuvio doesn't request rows nobody sees.
-    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && !c.mergedInto && (onlyMatched ? c.matchedCount : c.item_count) > 0) : [];
+    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && !c.mergedInto && (filtered ? c.visibleCount : c.item_count) > 0) : [];
     return cached(
       {
         id: 'com.vodstack.addon',
@@ -297,7 +296,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   const rows = (
     await env.DB.prepare(
       `SELECT v.provider_item_id,v.playback_ref,c.source_category_name AS cat FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id
-       WHERE v.imdb_id=? AND v.library_id=? AND v.media_type=? AND v.is_available=1 LIMIT 6`,
+       WHERE v.imdb_id=? AND v.library_id=? AND v.media_type=? AND v.is_available=1${META} LIMIT 6`,
     )
       .bind(tt[1], lib.id, type)
       .all<{ provider_item_id: string; playback_ref: string | null; cat: string }>()

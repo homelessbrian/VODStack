@@ -115,7 +115,7 @@ async function tmdbGet(base: string, apiKey: string, path: string, params: Recor
 }
 
 type Row = { id: number; title: string; year: number | null; media_type: MediaType; tmdb_id: number | null };
-type Result = { id: number; status: 'matched' | 'unmatched' | 'error'; tmdb: number | null; imdb: string | null; poster: string | null; score: number | null; names?: string[] };
+type Result = { id: number; status: 'matched' | 'unmatched' | 'error'; tmdb: number | null; imdb: string | null; poster: string | null; score: number | null; names?: string[]; ol?: string | null };
 
 async function matchOne(base: string, apiKey: string, row: Row): Promise<Result> {
   const kind = row.media_type === 'series' ? 'tv' : 'movie';
@@ -125,6 +125,7 @@ async function matchOne(base: string, apiKey: string, row: Row): Promise<Result>
     const imdb = String(d.imdb_id || d.external_ids?.imdb_id || '');
     return {
       tmdb: Number(d.id),
+      ol: /^[a-z]{2}$/.test(String(d.original_language || '')) ? String(d.original_language) : null,
       imdb: /^tt\d+$/.test(imdb) ? imdb : null,
       poster: d.poster_path ? IMG + d.poster_path : null,
       names: [d.title || d.name, d.original_title || d.original_name].filter(Boolean) as string[],
@@ -190,7 +191,8 @@ export async function matchBatch(env: Env, setupId: string, libraryId: string, i
     const writes = [
       env.DB.prepare(
         `UPDATE vod_items SET tmdb_match_status=json_extract(r.value,'$.status'),tmdb_id=COALESCE(json_extract(r.value,'$.tmdb'),vod_items.tmdb_id),
-           imdb_id=json_extract(r.value,'$.imdb'),tmdb_poster=json_extract(r.value,'$.poster'),tmdb_match_score=json_extract(r.value,'$.score')
+           imdb_id=json_extract(r.value,'$.imdb'),tmdb_poster=json_extract(r.value,'$.poster'),tmdb_match_score=json_extract(r.value,'$.score'),
+           orig_lang=COALESCE(json_extract(r.value,'$.ol'),vod_items.orig_lang)
          FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$.id') AND vod_items.library_id=?1`,
       ).bind(libraryId, JSON.stringify(results.map(({ names, ...r }) => r))),
     ];
@@ -206,4 +208,42 @@ export async function matchBatch(env: Env, setupId: string, libraryId: string, i
   }
   const count = (s: string) => results.filter((r) => r.status === s).length;
   return json({ checked: results.length, matched: count('matched'), unmatched: count('unmatched'), errors: count('error'), rateLimited });
+}
+
+/** POST /api/tmdb/langs — look up TMDB's original language for up to 40 already-matched titles. */
+export async function fillOriginalLanguages(env: Env, setupId: string, libraryId: string, ids: number[]) {
+  const secret = await env.DB.prepare('SELECT encrypted_value FROM setup_secrets WHERE setup_id=? AND secret_name=?')
+    .bind(setupId, 'tmdb_api_key')
+    .first<{ encrypted_value: string }>();
+  if (!secret) return json({ error: 'Save a valid TMDB API key first (Settings).' }, 400);
+  const { apiKey } = await decrypt<{ apiKey: string }>(env, secret.encrypted_value);
+  const rows = (
+    await env.DB.prepare('SELECT id,tmdb_id,media_type FROM vod_items WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?1 AND tmdb_id IS NOT NULL')
+      .bind(libraryId, JSON.stringify(ids))
+      .all<{ id: number; tmdb_id: number; media_type: MediaType }>()
+  ).results;
+  const out: { id: number; ol: string }[] = [];
+  let rateLimited = false;
+  const queue = [...rows];
+  await Promise.all(
+    Array.from({ length: 4 }, async () => {
+      for (let r = queue.shift(); r; r = queue.shift()) {
+        if (rateLimited) return;
+        try {
+          const d = await tmdbGet(tmdbBase(env), apiKey, `/${r.media_type === 'series' ? 'tv' : 'movie'}/${r.tmdb_id}`);
+          // Unknown or missing: record "xx" so the title isn't looked up again every time.
+          out.push({ id: r.id, ol: /^[a-z]{2}$/.test(String(d?.original_language || '')) ? String(d.original_language) : 'xx' });
+        } catch (e) {
+          if (e instanceof RateLimited) rateLimited = true;
+        }
+      }
+    }),
+  );
+  if (out.length)
+    await env.DB.prepare(
+      "UPDATE vod_items SET orig_lang=json_extract(r.value,'$.ol') FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$.id') AND vod_items.library_id=?1",
+    )
+      .bind(libraryId, JSON.stringify(out))
+      .run();
+  return json({ checked: out.length, rateLimited });
 }

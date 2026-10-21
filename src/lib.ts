@@ -160,14 +160,20 @@ export type Library = {
   settings_json: string | null;
   created_at: string;
 };
-export type LibrarySettings = { hideNew: boolean; hideRules: string[]; onlyMatched: boolean };
+export type LibrarySettings = { hideNew: boolean; hideRules: string[]; onlyMatched: boolean; englishOriginal: boolean; englishCopy: boolean };
 export function librarySettings(lib: { settings_json: string | null }): LibrarySettings {
   try {
     const s = JSON.parse(lib.settings_json || '{}');
     // onlyMatched is on unless the owner turned it off.
-    return { hideNew: !!s.hideNew, hideRules: Array.isArray(s.hideRules) ? s.hideRules.map(String) : [], onlyMatched: s.onlyMatched !== false };
+    return {
+      hideNew: !!s.hideNew,
+      hideRules: Array.isArray(s.hideRules) ? s.hideRules.map(String) : [],
+      onlyMatched: s.onlyMatched !== false,
+      englishOriginal: !!s.englishOriginal,
+      englishCopy: !!s.englishCopy,
+    };
   } catch {
-    return { hideNew: false, hideRules: [], onlyMatched: true };
+    return { hideNew: false, hideRules: [], onlyMatched: true, englishOriginal: false, englishCopy: false };
   }
 }
 /** SQL condition for "has full metadata". M3U series episodes can't be matched, so they always count. */
@@ -184,23 +190,43 @@ export function onlyMatchedActive(lib: { settings_json: string | null; stats_jso
     return false;
   }
 }
-/** Recount titles per row (all, and with metadata). Reads the library once; writes only changed rows. */
+/**
+ * SQL conditions for what reaches Nuvio, from the owner's "What family sees" switches
+ * (alias v = vod_items). Empty string when nothing is filtered.
+ */
+export function visibleFilter(lib: { settings_json: string | null; stats_json: string | null }) {
+  const s = librarySettings(lib);
+  const parts: string[] = [];
+  if (onlyMatchedActive(lib)) parts.push(HAS_METADATA);
+  // Originally English (TMDB). M3U episodes can't be matched, so they're left alone.
+  if (s.englishOriginal) parts.push("(v.orig_lang='en' OR v.tmdb_match_status='skip')");
+  // The provider's copy isn't labeled as another language.
+  if (s.englishCopy) parts.push("(v.copy_lang IS NULL OR v.copy_lang='en')");
+  return parts.length ? ' AND ' + parts.join(' AND ') : '';
+}
+/** Recount titles per row (all, with metadata, and visible in Nuvio). Reads the library once; writes only changed rows. */
 export async function recountCatalogs(env: Env, libraryId: string) {
+  const lib = await env.DB.prepare('SELECT settings_json,stats_json FROM libraries WHERE id=?')
+    .bind(libraryId)
+    .first<{ settings_json: string | null; stats_json: string | null }>();
+  const VIS = lib ? visibleFilter(lib) : '';
   await env.DB.batch([
     env.DB.prepare(
-      `UPDATE catalogs SET item_count=n.cnt,matched_count=n.m FROM (
-         SELECT v.catalog_id,COUNT(*) AS cnt,SUM(CASE WHEN ${HAS_METADATA} THEN 1 ELSE 0 END) AS m
+      `UPDATE catalogs SET item_count=n.cnt,matched_count=n.m,visible_count=n.vis FROM (
+         SELECT v.catalog_id,COUNT(*) AS cnt,SUM(CASE WHEN ${HAS_METADATA} THEN 1 ELSE 0 END) AS m,
+                SUM(CASE WHEN 1=1${VIS} THEN 1 ELSE 0 END) AS vis
          FROM vod_items v WHERE v.library_id=?1 AND v.is_available=1 GROUP BY v.catalog_id) n
-       WHERE catalogs.id=n.catalog_id AND (catalogs.item_count IS NOT n.cnt OR catalogs.matched_count IS NOT n.m)`,
+       WHERE catalogs.id=n.catalog_id AND (catalogs.item_count IS NOT n.cnt OR catalogs.matched_count IS NOT n.m OR catalogs.visible_count IS NOT n.vis)`,
     ).bind(libraryId),
     env.DB.prepare(
-      `UPDATE catalogs SET item_count=0,matched_count=0 WHERE library_id=?1 AND (item_count>0 OR matched_count>0) AND smart_json IS NULL AND is_merge=0
+      `UPDATE catalogs SET item_count=0,matched_count=0,visible_count=0 WHERE library_id=?1 AND (item_count>0 OR matched_count>0 OR visible_count>0) AND smart_json IS NULL AND is_merge=0
        AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)`,
     ).bind(libraryId),
     // Merged rows count the titles of the categories merged into them.
     env.DB.prepare(
       `UPDATE catalogs SET item_count=COALESCE((SELECT SUM(m.item_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0),
-         matched_count=COALESCE((SELECT SUM(m.matched_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
+         matched_count=COALESCE((SELECT SUM(m.matched_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0),
+         visible_count=COALESCE((SELECT SUM(m.visible_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
        WHERE library_id=? AND is_merge=1`,
     ).bind(libraryId),
   ]);
@@ -440,12 +466,13 @@ export type CatalogView = {
   titleOrder: 'az' | 'recent';
   smart: { list: string; type: MediaType; genre?: number; custom?: Record<string, unknown>; at: number | null } | null;
   matchedCount: number;
+  visibleCount: number;
 };
 /** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */
 export async function catalogsFor(env: Env, setupId: string, libraryId: string): Promise<CatalogView[]> {
   const rows = (
     await env.DB.prepare(
-      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,c.smart_json,c.smart_at,c.matched_count,p.display_name,p.is_hidden,p.sort_order AS psort
+      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,c.smart_json,c.smart_at,c.matched_count,c.visible_count,p.display_name,p.is_hidden,p.sort_order AS psort
        FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.library_id=?`,
     )
       .bind(setupId, libraryId)
@@ -467,6 +494,7 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       titleOrder: (r.title_order === 'recent' ? 'recent' : 'az') as 'az' | 'recent',
       smart: r.smart_json ? { ...JSON.parse(r.smart_json), at: r.smart_at ?? null } : null,
       matchedCount: r.smart_json ? r.item_count : r.matched_count,
+      visibleCount: r.smart_json ? r.item_count : r.visible_count,
     }))
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }

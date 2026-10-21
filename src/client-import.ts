@@ -217,6 +217,10 @@ window.VODImport = (function () {
       else unchanged++;
     });
 
+    // The category name goes along so VODStack can read language labels like "ITALIAN MOVIES".
+    var catNames = {};
+    data.catalogs.forEach(function (c) { catNames[c.t + '|' + c.c] = c.n; });
+    send.forEach(function (it) { it.cn = catNames[it.t + '|' + it.c] || ''; });
     for (var j = 0; j < send.length; j += ITEM_CHUNK) {
       progress('Saving titles… ' + Math.min(j + ITEM_CHUNK, send.length).toLocaleString() + ' / ' + send.length.toLocaleString());
       await call('POST', base + '/import/items', { items: send.slice(j, j + ITEM_CHUNK) });
@@ -285,6 +289,45 @@ window.VODImport = (function () {
     return { total: total, matched: matched, unmatched: unmatched };
   }
 
+  // One-time fill-in for the language switches: the provider's labels, then TMDB's original language.
+  async function fillLanguages(progress, needOriginal) {
+    progress = progress || function () {};
+    var after = 0, checked = 0;
+    for (;;) {
+      var r = await call('POST', '/api/library/detect-langs', { after: after });
+      checked += r.checked;
+      progress('Reading language labels… ' + checked.toLocaleString() + ' titles');
+      if (r.next === null || r.next === undefined) break;
+      after = r.next;
+    }
+    if (needOriginal) {
+      var ids = [];
+      after = 0;
+      for (;;) {
+        var page = await call('GET', '/api/tmdb/langs/pending?after=' + after);
+        ids = ids.concat(page.ids);
+        if (page.next === null || page.next === undefined) break;
+        after = page.next;
+      }
+      var batches = [], done = 0, total = ids.length, pause = 0, limited = 0;
+      for (var i = 0; i < ids.length; i += 40) batches.push(ids.slice(i, i + 40));
+      async function worker() {
+        for (var b = batches.shift(); b; b = batches.shift()) {
+          if (pause) await sleep(pause);
+          var r = await call('POST', '/api/tmdb/langs', { ids: b });
+          done += r.checked;
+          if (r.rateLimited) {
+            if (++limited > 40) throw new Error('TMDB keeps rate-limiting this key. Try again in a few minutes.');
+            pause = 3000; batches.push(b);
+          } else pause = 0;
+          progress('Looking up original languages on TMDB… ' + Math.min(done, total).toLocaleString() + ' / ' + total.toLocaleString());
+        }
+      }
+      if (total) await Promise.all([worker(), worker()]);
+    }
+    await call('POST', '/api/tmdb/stats', {});
+  }
+
   var running = false;
   // fileText: playlist contents the user picked from their own device. Used when the
   // provider blocks requests coming from Cloudflare (e.g. "error code: 1106").
@@ -315,6 +358,6 @@ window.VODImport = (function () {
     }
   }
 
-  return { run: run, match: match, _parseM3U: parseM3U, _hash: hash };
+  return { run: run, match: match, fillLanguages: fillLanguages, _parseM3U: parseM3U, _hash: hash };
 })();
 `;

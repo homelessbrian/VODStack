@@ -142,6 +142,10 @@ const PAGE_JS = String.raw`(function () {
     var lib = S.data.library;
     return !!(lib && lib.settings && lib.settings.onlyMatched !== false && lib.stats && lib.stats.withImdb > 0);
   }
+  function filtering() {
+    var st = (S.data.library && S.data.library.settings) || {};
+    return onlyMatched() || st.englishOriginal || st.englishCopy;
+  }
   function isNew(c) {
     var lib = S.data.library;
     var now = Date.now() / 1000;
@@ -309,7 +313,12 @@ const PAGE_JS = String.raw`(function () {
     var st = S.data.library.settings || { hideNew: false, hideRules: [], onlyMatched: true };
     return '<div class="panel"><h3>What family sees</h3>' +
       '<label style="display:flex;gap:8px;align-items:center;color:var(--text);margin-top:0"><input type="checkbox" id="onlyMatched" style="width:auto"' + (st.onlyMatched !== false ? ' checked' : '') + '> Only show titles with full metadata in Nuvio (recommended)</label>' +
-      '<div class="help">Titles TMDB couldn’t match (wrong names, no poster or description) are kept out of Nuvio. They stay in VODStack and appear automatically if they get matched later. Turns on once at least some titles are matched.</div><hr class="divider"><h3>Auto-hide</h3><p>Categories whose name contains any of these words are hidden automatically, including new ones from future refreshes. Separate words with commas.</p>' +
+      '<div class="help">Titles TMDB couldn’t match (wrong names, no poster or description) are kept out of Nuvio. They stay in VODStack and appear automatically if they get matched later. Turns on once at least some titles are matched.</div>' +
+      '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="englishOriginal" style="width:auto"' + (st.englishOriginal ? ' checked' : '') + '> Only titles originally in English</label>' +
+      '<div class="help">Uses TMDB’s original language. Hides films and shows made in other languages, even if your provider has an English dub.</div>' +
+      '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="englishCopy" style="width:auto"' + (st.englishCopy ? ' checked' : '') + '> Hide copies the provider labels as another language</label>' +
+      '<div class="help">Uses your provider’s labels, like “IT - Title”, “|FR| Title”, “Title [ITA]” or categories such as “ITALIAN MOVIES”. Titles without a label are treated as English.</div>' +
+      '<div id="msgFilters"></div><hr class="divider"><h3>Auto-hide</h3><p>Categories whose name contains any of these words are hidden automatically, including new ones from future refreshes. Separate words with commas.</p>' +
       '<input id="hideRules" placeholder="e.g. ARABIC, XXX, |FR|, ADULT" value="' + esc(st.hideRules.join(', ')) + '">' +
       '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="hideNew" style="width:auto"' + (st.hideNew ? ' checked' : '') + '> New categories from the provider start hidden (they get a “New” badge so you can review them)</label>' +
       '<div class="actions"><button class="small" id="saveRules">Save</button><button class="small primary" id="applyRules">Save and hide matching now</button></div><div id="msgRules"></div></div>';
@@ -320,8 +329,8 @@ const PAGE_JS = String.raw`(function () {
     var members = c.isMerge ? cats.filter(function (m) { return m.mergedInto === c.id; }) : [];
     var meta = '<span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' +
       (c.isMerge ? '<span class="pill">Merged</span>' : '') + (c.smart ? '<span class="pill" style="color:var(--accent)">Smart · TMDB</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
-      (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles' + (!c.smart && onlyMatched() ? ' (' + n(c.matchedCount) + ' with metadata)' : '') + ' · ' +
-      (parent ? 'Shown inside “' + esc(parent.name) + '”' : !c.item_count ? 'Empty' : c.hidden ? 'Hidden' : onlyMatched() && !c.matchedCount ? 'Not in Nuvio (nothing matched yet)' : 'Shown');
+      (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles' + (!c.smart && filtering() ? ' (' + n(c.visibleCount) + ' in Nuvio)' : '') + ' · ' +
+      (parent ? 'Shown inside “' + esc(parent.name) + '”' : !c.item_count ? 'Empty' : c.hidden ? 'Hidden' : filtering() && !c.visibleCount ? 'Not in Nuvio (everything filtered out)' : 'Shown');
     var buttons = parent
       ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
       : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
@@ -366,7 +375,7 @@ const PAGE_JS = String.raw`(function () {
       return async function () {
         var words = el('hideRules').value.split(',').map(function (w) { return w.trim(); }).filter(Boolean);
         try {
-          var r = await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, onlyMatched: el('onlyMatched').checked, apply: apply } });
+          var r = await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, onlyMatched: el('onlyMatched').checked, englishOriginal: el('englishOriginal').checked, englishCopy: el('englishCopy').checked, apply: apply } });
           await load();
           say('msgRules', apply ? 'Saved. ' + n(r.hidden) + ' categories hidden.' : 'Saved.', true);
         } catch (e) { say('msgRules', e.message); }
@@ -374,7 +383,28 @@ const PAGE_JS = String.raw`(function () {
     };
     wireSmart();
     el('saveRules').onclick = saveRules(false);
-    el('onlyMatched').onchange = saveRules(false);
+    // Changing what family sees: fill in any missing language info first, save, then rebuild smart rows.
+    var filterChanged = async function () {
+      var boxes = ['onlyMatched', 'englishOriginal', 'englishCopy'].map(el);
+      boxes.forEach(function (b) { b.disabled = true; });
+      var show = function (t, ok) { say('msgFilters', t, ok); };
+      try {
+        if (el('englishOriginal').checked || el('englishCopy').checked) {
+          if (el('englishOriginal').checked && !S.data.tmdbConfigured) throw new Error('“Originally in English” needs a TMDB key (Settings).');
+          await VODImport.fillLanguages(function (t) { show(t, true); }, el('englishOriginal').checked);
+        }
+        var words = el('hideRules').value.split(',').map(function (w) { return w.trim(); }).filter(Boolean);
+        show('Saving…', true);
+        await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, onlyMatched: el('onlyMatched').checked, englishOriginal: el('englishOriginal').checked, englishCopy: el('englishCopy').checked } });
+        if (S.data.catalogs.some(function (c) { return c.smart; })) await refreshSmartRows(show);
+        await load();
+        say('msgFilters', 'Saved. Nuvio now gets ' + n(S.data.catalogs.filter(function (c) { return !c.mergedInto; }).reduce(function (t, c) { return t + (c.isMerge ? 0 : c.visibleCount); }, 0)) + ' titles.', true);
+      } catch (e) {
+        show(e.message);
+        boxes.forEach(function (b) { b.disabled = false; });
+      }
+    };
+    ['onlyMatched', 'englishOriginal', 'englishCopy'].forEach(function (id) { el(id).onchange = filterChanged; });
     el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
     function bulk(hidden) {

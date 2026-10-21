@@ -8,7 +8,7 @@
 //
 // The result is cached on the row and refreshed every few hours by the cron (or on first view), so
 // Nuvio never waits on TMDB. A refresh costs ≤10 TMDB calls and one indexed lookup per page.
-import { decrypt, HttpError, type Env, type MediaType } from './lib';
+import { decrypt, HttpError, visibleFilter, type Env, type MediaType } from './lib';
 import { tmdbBase } from './tmdb';
 
 export type CustomFilters = {
@@ -159,6 +159,11 @@ function pageUrl(env: Env, apiKey: string, def: SmartDef, page: number) {
 /** Walk the TMDB list and return this library's matching titles, in TMDB's order. */
 export async function buildSmartIds(env: Env, def: SmartDef, libraryId: string, ownerSetupId: string) {
   const apiKey = await tmdbKey(env, ownerSetupId);
+  // Only titles that pass "What family sees", so a "Top 25" row really has 25 they can see.
+  const lib = await env.DB.prepare('SELECT settings_json,stats_json FROM libraries WHERE id=?')
+    .bind(libraryId)
+    .first<{ settings_json: string | null; stats_json: string | null }>();
+  const VIS = lib ? visibleFilter(lib) : '';
   const custom = def.list === 'custom';
   const want = custom ? def.custom!.limit : Infinity;
   const maxPages = custom ? 10 : 5;
@@ -177,7 +182,7 @@ export async function buildSmartIds(env: Env, def: SmartDef, libraryId: string, 
       const found = (
         await env.DB.prepare(
           `SELECT v.id,v.tmdb_id FROM vod_items v WHERE v.tmdb_id IN (SELECT value FROM json_each(?1))
-           AND v.library_id=?2 AND v.media_type=?3 AND v.is_available=1`,
+           AND v.library_id=?2 AND v.media_type=?3 AND v.is_available=1${VIS}`,
         )
           .bind(JSON.stringify(tmdbIds), libraryId, def.type)
           .raw<[number, number]>()

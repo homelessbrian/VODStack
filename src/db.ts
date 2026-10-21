@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -230,6 +230,13 @@ const MIGRATIONS: Record<number, string[]> = {
   4: [
     // Per-row count of titles with full metadata (IMDb match), for "only show matched titles".
     'ALTER TABLE catalogs ADD COLUMN matched_count INTEGER NOT NULL DEFAULT 0',
+  ],
+  5: [
+    // TMDB's original language ('en', 'it', …) and the language the provider labels its copy as.
+    'ALTER TABLE vod_items ADD COLUMN orig_lang TEXT',
+    'ALTER TABLE vod_items ADD COLUMN copy_lang TEXT',
+    // Titles per row that pass every "What family sees" filter, so empty rows stay out of Nuvio.
+    'ALTER TABLE catalogs ADD COLUMN visible_count INTEGER NOT NULL DEFAULT 0',
   ],
 };
 

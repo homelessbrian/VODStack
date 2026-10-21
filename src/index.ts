@@ -8,7 +8,8 @@
 import { dashboard } from './dashboard';
 import { handleAddon } from './addon';
 import { getDb } from './db';
-import { MATCH_BATCH, matchBatch, searchTerms, tmdbBase } from './tmdb';
+import { MATCH_BATCH, fillOriginalLanguages, matchBatch, searchTerms, tmdbBase } from './tmdb';
+import { copyLanguage } from './lang';
 import { CERTS, GENRES, LANGUAGES, SMART_LISTS, SORT_LABELS, buildSmartIds, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
 import {
   type Env,
@@ -281,7 +282,13 @@ async function route(request: Request, env: Env): Promise<Response> {
       .map((w: unknown) => str(w, 60))
       .filter(Boolean)
       .slice(0, 100);
-    const settings = { hideNew: !!body.hideNew, hideRules, onlyMatched: body.onlyMatched !== false };
+    const settings = {
+      hideNew: !!body.hideNew,
+      hideRules,
+      onlyMatched: body.onlyMatched !== false,
+      englishOriginal: !!body.englishOriginal,
+      englishCopy: !!body.englishCopy,
+    };
     await env.DB.prepare('UPDATE libraries SET settings_json=? WHERE id=?').bind(JSON.stringify(settings), lib.id).run();
     let hidden = 0;
     if (body.apply && hideRules.length) {
@@ -297,7 +304,49 @@ async function route(request: Request, env: Env): Promise<Response> {
           .run();
       hidden = ids.length;
     }
+    await recountCatalogs(env, lib.id);
     return json({ ok: true, hidden });
+  }
+  if (method === 'POST' && path === '/api/library/detect-langs') {
+    // Re-read the provider's language labels for titles already imported (2,000 per call).
+    const lib = await ownedLibrary(env, setupId);
+    const after = Math.max(0, Number(body.after) || 0);
+    const rows = await env.DB.prepare(
+      `SELECT v.id,v.title,c.source_category_name,v.copy_lang FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id
+       WHERE v.id>? AND v.library_id=? ORDER BY v.id LIMIT 2000`,
+    )
+      .bind(after, lib.id)
+      .raw<[number, string, string, string | null]>();
+    const changes = rows
+      .map(([id, title, cat, old]) => ({ id, cl: copyLanguage(title, cat), old }))
+      .filter((r) => r.cl !== r.old)
+      .map(({ id, cl }) => ({ id, cl }));
+    if (changes.length)
+      await env.DB.prepare(
+        "UPDATE vod_items SET copy_lang=json_extract(r.value,'$.cl') FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$.id') AND vod_items.library_id=?1",
+      )
+        .bind(lib.id, JSON.stringify(changes))
+        .run();
+    return json({ ok: true, checked: rows.length, changed: changes.length, next: rows.length === 2000 ? rows[rows.length - 1][0] : null });
+  }
+  if (method === 'GET' && path === '/api/tmdb/langs/pending') {
+    // Matched titles whose original language isn't known yet (matched before this existed).
+    const lib = await ownedLibrary(env, setupId);
+    const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
+    const ids = (
+      await env.DB.prepare(
+        "SELECT id FROM vod_items WHERE id>? AND library_id=? AND tmdb_id IS NOT NULL AND orig_lang IS NULL AND tmdb_match_status='matched' AND is_available=1 ORDER BY id LIMIT 5000",
+      )
+        .bind(after, lib.id)
+        .raw<[number]>()
+    ).map((r) => r[0]);
+    return json({ ids, next: ids.length === 5000 ? ids[ids.length - 1] : null });
+  }
+  if (method === 'POST' && path === '/api/tmdb/langs') {
+    const lib = await ownedLibrary(env, setupId);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown): n is number => Number.isInteger(n)).slice(0, 40);
+    if (!ids.length) return json({ error: 'No titles.' }, 400);
+    return fillOriginalLanguages(env, setupId, lib.id, ids);
   }
   if (method === 'POST' && path === '/api/library/invite') {
     // A new invite link; the previous one stops working. People who already joined are unaffected.
@@ -407,6 +456,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         tm: Number.isInteger(Number(x?.tm)) && Number(x?.tm) > 0 ? Number(x.tm) : null,
         // M3U lists series episode-by-episode, which can't be matched to a show reliably.
         ms: lib.kind === 'm3u' && t === 'series' ? 'skip' : 'pending',
+        // Language the provider labels this copy as (from the title or its category).
+        cl: copyLanguage(title, str(x?.cn, 150)),
       });
     }
     const items = JSON.stringify(clean);
@@ -416,14 +467,14 @@ async function route(request: Request, env: Env): Promise<Response> {
     const JOIN = `FROM json_each(?2) j CROSS JOIN catalogs c
       ON c.library_id=?1 AND c.media_type=json_extract(j.value,'$.t') AND c.source_category_id=json_extract(j.value,'$.c')`;
     const r = await env.DB.prepare(
-      `INSERT INTO vod_items(library_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status)
+      `INSERT INTO vod_items(library_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status,copy_lang)
        SELECT ?1,c.id,json_extract(j.value,'$.p'),c.media_type,json_extract(j.value,'$.title'),json_extract(j.value,'$.y'),
               json_extract(j.value,'$.img'),json_extract(j.value,'$.d'),json_extract(j.value,'$.pb'),json_extract(j.value,'$.h'),1,
-              json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms')
+              json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms'),json_extract(j.value,'$.cl')
        ${JOIN} WHERE true
        ON CONFLICT(catalog_id,provider_item_id) DO UPDATE SET
          title=excluded.title,year=excluded.year,poster_url=excluded.poster_url,overview=excluded.overview,
-         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,removed_at=NULL,
+         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,removed_at=NULL,copy_lang=excluded.copy_lang,
          tmdb_match_status=CASE WHEN ${RESET} THEN excluded.tmdb_match_status ELSE vod_items.tmdb_match_status END,
          tmdb_id=CASE WHEN ${RESET} THEN excluded.tmdb_id ELSE vod_items.tmdb_id END,
          imdb_id=CASE WHEN ${RESET} THEN NULL ELSE vod_items.imdb_id END,
@@ -468,6 +519,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return json({ ok: true });
     }
     // Store per-row counts once here, so pages never have to count titles.
+    await libraryStats(env, lib.id);
     await recountCatalogs(env, lib.id);
     const purged = await purgeRemoved(env, lib.id);
     await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
@@ -753,8 +805,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === '/api/tmdb/stats' && method === 'POST') {
     // Recount after a matching run (one read of the library, then stored).
     const lib = await ownedLibrary(env, setupId);
+    const stats = await libraryStats(env, lib.id);
     await recountCatalogs(env, lib.id);
-    return json(await libraryStats(env, lib.id));
+    return json(stats);
   }
   if (path === '/api/tmdb/pending' && method === 'GET') {
     const lib = await ownedLibrary(env, setupId);

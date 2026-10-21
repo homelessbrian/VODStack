@@ -46,6 +46,10 @@ Their playback uses their own account. They see the rows exactly as the owner se
 On the **Rows** page:
 - **Only show titles with full metadata in Nuvio** (on by default): titles TMDB couldn't match are kept
   out of Nuvio, rows and search, but stay in VODStack and appear once they're matched.
+- **Only titles originally in English** (TMDB's original language) and **Hide copies the provider labels
+  as another language** ("IT - Title", "[ITA]", "ITALIAN MOVIES"…): both off by default, switch on/off
+  any time. Turning one on the first time fills in language info for the existing library (a few minutes).
+  Rows left with nothing to show disappear from Nuvio.
 - **Hide/Show**, **Rename**, drag the **⠿** handle (or use ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
 - **View** a row to see its titles, with posters and whether TMDB matched them.
 - **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.
