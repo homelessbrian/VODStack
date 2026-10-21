@@ -8,7 +8,7 @@
 import { dashboard } from './dashboard';
 import { handleAddon } from './addon';
 import { getDb } from './db';
-import { MATCH_BATCH, fillOriginalLanguages, matchBatch, searchTerms, tmdbBase } from './tmdb';
+import { MATCH_BATCH, fillOriginalLanguages, matchBatch, searchTerms, sortKey, tmdbBase } from './tmdb';
 import { copyLanguage } from './lang';
 import { CERTS, GENRES, LANGUAGES, SMART_LISTS, SORT_LABELS, buildSmartIds, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
 import {
@@ -27,6 +27,7 @@ import {
   getLibrary,
   librarySettings,
   matchesHideRule,
+  backfillSortTitles,
   recountCatalogs,
   getLogin,
   hideSecrets,
@@ -227,6 +228,7 @@ async function route(request: Request, env: Env): Promise<Response> {
             status: lib.last_refresh_status,
             stats: lib.stats_json ? JSON.parse(lib.stats_json) : null,
             settings: lib.isOwner ? librarySettings(lib) : undefined,
+            sortReady: !!(lib as any).sort_ready,
             createdAt: Math.floor(Date.parse(lib.created_at.replace(' ', 'T') + 'Z') / 1000) || null,
           }
         : null,
@@ -256,7 +258,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (lib) await env.DB.prepare('UPDATE libraries SET name=? WHERE id=?').bind(name, id).run();
     else
       await env.DB.batch([
-        env.DB.prepare('INSERT INTO libraries(id,owner_setup_id,name,kind) VALUES(?,?,?,?)').bind(id, setupId, name, kind),
+        // New libraries get sort names as they import, so they skip the fill-in.
+        env.DB.prepare('INSERT INTO libraries(id,owner_setup_id,name,kind,sort_ready) VALUES(?,?,?,?,1)').bind(id, setupId, name, kind),
         env.DB.prepare('UPDATE setups SET library_id=? WHERE id=?').bind(id, setupId),
       ]);
     await saveLogin(env, setupId, id, cfg);
@@ -347,6 +350,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown): n is number => Number.isInteger(n)).slice(0, 40);
     if (!ids.length) return json({ error: 'No titles.' }, 400);
     return fillOriginalLanguages(env, setupId, lib.id, ids);
+  }
+  if (method === 'POST' && path === '/api/library/sort-backfill') {
+    const lib = await ownedLibrary(env, setupId);
+    return json(await backfillSortTitles(env, lib.id, sortKey));
   }
   if (method === 'POST' && path === '/api/library/invite') {
     // A new invite link; the previous one stops working. People who already joined are unaffected.
@@ -458,6 +465,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         ms: lib.kind === 'm3u' && t === 'series' ? 'skip' : 'pending',
         // Language the provider labels this copy as (from the title or its category).
         cl: copyLanguage(title, str(x?.cn, 150)),
+        so: sortKey(title),
       });
     }
     const items = JSON.stringify(clean);
@@ -467,14 +475,14 @@ async function route(request: Request, env: Env): Promise<Response> {
     const JOIN = `FROM json_each(?2) j CROSS JOIN catalogs c
       ON c.library_id=?1 AND c.media_type=json_extract(j.value,'$.t') AND c.source_category_id=json_extract(j.value,'$.c')`;
     const r = await env.DB.prepare(
-      `INSERT INTO vod_items(library_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status,copy_lang)
+      `INSERT INTO vod_items(library_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status,copy_lang,sort_title)
        SELECT ?1,c.id,json_extract(j.value,'$.p'),c.media_type,json_extract(j.value,'$.title'),json_extract(j.value,'$.y'),
               json_extract(j.value,'$.img'),json_extract(j.value,'$.d'),json_extract(j.value,'$.pb'),json_extract(j.value,'$.h'),1,
-              json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms'),json_extract(j.value,'$.cl')
+              json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms'),json_extract(j.value,'$.cl'),json_extract(j.value,'$.so')
        ${JOIN} WHERE true
        ON CONFLICT(catalog_id,provider_item_id) DO UPDATE SET
          title=excluded.title,year=excluded.year,poster_url=excluded.poster_url,overview=excluded.overview,
-         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,removed_at=NULL,copy_lang=excluded.copy_lang,
+         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,removed_at=NULL,copy_lang=excluded.copy_lang,sort_title=excluded.sort_title,
          tmdb_match_status=CASE WHEN ${RESET} THEN excluded.tmdb_match_status ELSE vod_items.tmdb_match_status END,
          tmdb_id=CASE WHEN ${RESET} THEN excluded.tmdb_id ELSE vod_items.tmdb_id END,
          imdb_id=CASE WHEN ${RESET} THEN NULL ELSE vod_items.imdb_id END,
@@ -581,18 +589,19 @@ async function route(request: Request, env: Env): Promise<Response> {
     const ids = cat.is_merge
       ? (await env.DB.prepare('SELECT id FROM catalogs WHERE merged_into=? AND library_id=?').bind(id, lib.id).raw<[number]>()).map((r) => r[0])
       : [id];
-    const COLS = 'id,title,year,poster_url,tmdb_poster,imdb_id,tmdb_match_status,is_available,catalog_id';
+    const COLS = 'id,title,sort_title,year,poster_url,tmdb_poster,imdb_id,tmdb_match_status,is_available,catalog_id';
     const lists = await Promise.all(
       ids.map((cid) =>
         (q
-          ? env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 AND lower(title) LIKE ? ORDER BY title LIMIT ?`).bind(cid, '%' + q + '%', skip + 101)
-          : env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 ORDER BY title LIMIT ?`).bind(cid, skip + 101)
+          ? env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 AND lower(title) LIKE ? ORDER BY sort_title LIMIT ?`).bind(cid, '%' + q + '%', skip + 101)
+          : env.DB.prepare(`SELECT ${COLS} FROM vod_items WHERE catalog_id=? AND is_available=1 ORDER BY sort_title LIMIT ?`).bind(cid, skip + 101)
         )
           .all<any>()
           .then((r) => r.results),
       ),
     );
-    const all = lists.flat().sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+    const k = (x: any) => (x.sort_title ?? '') + '\u0000' + x.title;
+    const all = lists.flat().sort((a, b) => (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0));
     return json({ titles: all.slice(skip, skip + 100), more: all.length > skip + 100 });
   }
 
@@ -864,6 +873,15 @@ export default {
   // otherwise pressing play on a series episode could wait a minute for it to wake.
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
     ctx.waitUntil(wakeRelay(env));
+    // Fill in A–Z sort names for libraries imported before they existed (2,000 titles per run).
+    if (env.TURSO_URL)
+      ctx.waitUntil(
+        (async () => {
+          const db = { ...env, DB: getDb(env.TURSO_URL, env.TURSO_TOKEN) };
+          const lib = await db.DB.prepare('SELECT id FROM libraries WHERE sort_ready=0 LIMIT 1').first<{ id: string }>();
+          if (lib) await backfillSortTitles(db, lib.id, sortKey);
+        })().catch(() => {}),
+      );
     // Keep smart rows (TMDB lists) fresh, a couple per run.
     if (env.TURSO_URL) ctx.waitUntil(refreshStaleSmartRows({ ...env, DB: getDb(env.TURSO_URL, env.TURSO_TOKEN) }));
   },

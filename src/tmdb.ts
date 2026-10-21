@@ -33,6 +33,10 @@ const plausibleYear = (y: number) => y >= 1900 && y <= new Date().getUTCFullYear
 export function displayTitle(raw: string) {
   return cleanTitle(raw, false).replace(/\s[-–]\s(?:19|20)\d{2}$/, '');
 }
+/** A–Z sort key: the clean title, lowercased, without accents or a leading "The"/"A"/"An". */
+export function sortKey(raw: string) {
+  return norm(displayTitle(raw)).replace(/^(the|a|an) (?=\S)/, '').slice(0, 120);
+}
 const STOP = new Set(['the', 'a', 'an', 'of', 'and', 'in', 'on', 'to', 'for', 'at', 'by', 'de', 'la', 'le', 'el', 'les', 'der', 'die', 'das']);
 /**
  * Search keys for a title: the normalized title from each word onwards, so "the matrix reloaded"

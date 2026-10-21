@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -237,6 +237,15 @@ const MIGRATIONS: Record<number, string[]> = {
     'ALTER TABLE vod_items ADD COLUMN copy_lang TEXT',
     // Titles per row that pass every "What family sees" filter, so empty rows stay out of Nuvio.
     'ALTER TABLE catalogs ADD COLUMN visible_count INTEGER NOT NULL DEFAULT 0',
+  ],
+  6: [
+    // A–Z by the clean title ("4K-EN - The Matrix (1999)" sorts as "matrix"). Filled in for existing
+    // titles by backfillSortTitles (cron + dashboard), and on import for new ones.
+    'ALTER TABLE vod_items ADD COLUMN sort_title TEXT',
+    'DROP INDEX IF EXISTS vod_items_page_idx',
+    'CREATE INDEX IF NOT EXISTS vod_items_sort_idx ON vod_items(catalog_id, sort_title)',
+    'ALTER TABLE libraries ADD COLUMN sort_ready INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE libraries ADD COLUMN sort_cursor INTEGER NOT NULL DEFAULT 0',
   ],
 };
 

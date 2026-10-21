@@ -204,6 +204,29 @@ export function visibleFilter(lib: { settings_json: string | null; stats_json: s
   if (s.englishCopy) parts.push("(v.copy_lang IS NULL OR v.copy_lang='en')");
   return parts.length ? ' AND ' + parts.join(' AND ') : '';
 }
+/**
+ * Fill in A–Z sort keys for titles imported before they existed: 2,000 per call, remembering where
+ * it got to. Called by the cron and by the owner's dashboard until the library is done.
+ */
+export async function backfillSortTitles(env: Env, libraryId: string, sortKey: (t: string) => string) {
+  const lib = await env.DB.prepare('SELECT sort_ready,sort_cursor FROM libraries WHERE id=?').bind(libraryId).first<{ sort_ready: number; sort_cursor: number }>();
+  if (!lib || lib.sort_ready) return { done: true, checked: 0 };
+  const rows = await env.DB.prepare('SELECT id,title FROM vod_items WHERE id>? AND library_id=? ORDER BY id LIMIT 2000')
+    .bind(lib.sort_cursor, libraryId)
+    .raw<[number, string]>();
+  const done = rows.length < 2000;
+  const writes = [
+    env.DB.prepare('UPDATE libraries SET sort_cursor=?,sort_ready=? WHERE id=?').bind(rows.length ? rows[rows.length - 1][0] : lib.sort_cursor, done ? 1 : 0, libraryId),
+  ];
+  if (rows.length)
+    writes.unshift(
+      env.DB.prepare(
+        "UPDATE vod_items SET sort_title=json_extract(r.value,'$[1]') FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$[0]') AND vod_items.library_id=?1 AND vod_items.sort_title IS NOT json_extract(r.value,'$[1]')",
+      ).bind(libraryId, JSON.stringify(rows.map(([id, t]) => [id, sortKey(t)]))),
+    );
+  await env.DB.batch(writes);
+  return { done, checked: rows.length };
+}
 /** Recount titles per row (all, with metadata, and visible in Nuvio). Reads the library once; writes only changed rows. */
 export async function recountCatalogs(env: Env, libraryId: string) {
   const lib = await env.DB.prepare('SELECT settings_json,stats_json FROM libraries WHERE id=?')

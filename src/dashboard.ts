@@ -36,8 +36,21 @@ const PAGE_JS = String.raw`(function () {
   }
 
   async function load() {
-    try { S.data = await api('/api/state'); render(); }
+    try { S.data = await api('/api/state'); render(); sortBackfill(); }
     catch (e) { S.data = null; welcome(); }
+  }
+  // One-time, in the background: give older titles their clean A–Z sort names.
+  var sorting = false;
+  async function sortBackfill() {
+    var lib = S.data && S.data.library;
+    if (sorting || S.data.role !== 'owner' || !lib || lib.sortReady) return;
+    sorting = true;
+    try {
+      for (var i = 0; i < 200; i++) {
+        var r = await api('/api/library/sort-backfill', { method: 'POST', body: {} });
+        if (r.done) { lib.sortReady = true; break; }
+      }
+    } catch (e) {} finally { sorting = false; }
   }
 
   // ---------- signed out ----------

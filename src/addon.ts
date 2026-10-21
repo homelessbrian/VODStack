@@ -36,8 +36,9 @@ type ItemRow = {
   media_type: 'movie' | 'series';
   imdb_id: string | null;
   catalog_id?: number;
+  sort_title?: string | null;
 };
-const ITEM_COLS = 'v.id,v.title,v.year,v.poster_url,v.tmdb_poster,v.overview,v.media_type,v.imdb_id,v.catalog_id';
+const ITEM_COLS = 'v.id,v.title,v.sort_title,v.year,v.poster_url,v.tmdb_poster,v.overview,v.media_type,v.imdb_id,v.catalog_id';
 
 const cached = (data: unknown, seconds: number) =>
   new Response(JSON.stringify(data), {
@@ -55,6 +56,8 @@ function metaPreview(x: ItemRow) {
     description: x.overview || undefined,
   };
 }
+const key = (x: { sort_title?: string | null; title: string }) => (x.sort_title ?? '') + '\u0000' + x.title;
+const byKey = (a: ItemRow, b: ItemRow) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 function dedupe<T extends { id: string }>(list: T[]) {
   const seen = new Set<string>();
   return list.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
@@ -192,7 +195,8 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));
     // "Newest first" walks the (catalog_id) index backwards; A–Z walks (catalog_id, title).
     const recent = cat.title_order === 'recent';
-    const ORDER = recent ? 'ORDER BY v.id DESC' : 'ORDER BY v.title';
+    // A–Z walks the (catalog_id, sort_title) index: clean titles, ignoring a leading "The".
+    const ORDER = recent ? 'ORDER BY v.id DESC' : 'ORDER BY v.sort_title';
     if (cat.smart_json) {
       // Smart row: TMDB's order, cached on the row (the cron keeps it fresh; first view fills it).
       let ids: number[] = JSON.parse(cat.smart_ids || '[]');
@@ -228,7 +232,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       const merged = dedupe(
         lists
           .flat()
-          .sort((a, b) => (recent ? b.id - a.id : a.title < b.title ? -1 : a.title > b.title ? 1 : 0))
+          .sort((a, b) => (recent ? b.id - a.id : byKey(a, b)))
           .map(metaPreview),
       );
       return cached({ metas: merged.slice(skip, skip + PAGE) }, 1800);
