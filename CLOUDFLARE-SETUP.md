@@ -50,7 +50,9 @@ Apply the schema to your remote D1 database:
 npx wrangler d1 migrations apply vodstack --remote
 ```
 
-Review the output and confirm both migrations are applied. This creates the setup/session tables, IPTV source and catalog tables, and TMDB match fields.
+Review the output and confirm all migrations are applied. This creates the setup/session tables, IPTV source and catalog tables, and TMDB match fields.
+
+Run this command again whenever a new file appears in `migrations/` (for example after pulling an update).
 
 ## 5. Test locally first (recommended)
 
@@ -80,14 +82,34 @@ Wrangler prints a URL similar to `https://vodstack.<your-subdomain>.workers.dev`
 2. Request/use a TMDB API key (v3).
 3. In the app, open **Setup & security → TMDB matching**.
 4. Paste the v3 API key and choose **Save & validate key**.
-5. Once validated, choose **Match next 25 items** repeatedly to process the catalog in batches. Unmatched items are retained and marked for review rather than being silently assigned a weak match.
+5. Once validated, choose **Match next 20 items** repeatedly to process the catalog in batches. Unmatched items are retained and marked for review rather than being silently assigned a weak match.
 
 TMDB matching uses provider titles and optional year hints. Automated title matching can still be wrong; inspect results before relying on the metadata. Manual match correction and deeper episode matching are future improvements.
+
+## Updating an existing deployment
+
+When an update adds a file to `migrations/`, the database must be updated **before** the new code runs, or the site will error. Cloudflare's GitHub auto-deploy does not do this on its own. Use one of these:
+
+- **From PowerShell** (in the project folder): `npx wrangler d1 migrations apply vodstack --remote`, then `npm run deploy`.
+- **From the Cloudflare dashboard only**: open *Storage & Databases → D1 → vodstack → Console*, paste the contents of the new migration file, run it, then run `INSERT INTO d1_migrations (name) VALUES ('<file name>.sql');` so Wrangler knows it was applied.
+
+## How imports work (and why)
+
+Cloudflare's Workers Free plan gives each request about 10 ms of CPU and 50 database calls, and D1 Free allows 100,000 row writes per day. A big IPTV library cannot be imported inside one request under those limits, so the import is split up:
+
+1. The Worker downloads each provider list **once** and streams it to your browser unchanged. M3U = 1 provider request per import; Xtream = 5 (account check, movie categories, series categories, all movies, all series).
+2. Your browser parses the data and compares it with what is already saved.
+3. Only new or changed titles are sent back, a few hundred at a time; each batch is saved with a single SQL statement.
+
+Keep the dashboard tab open until the import finishes. Each new title costs 2 row writes, so a first import of roughly 45,000 titles fits in one day's free allowance. If you hit the daily limit, run **Refresh** after 00:00 UTC; titles already saved are skipped. Refreshes only write titles that changed.
+
+Stored stream links never contain your password: Xtream links are rebuilt from the encrypted source settings at play time, and M3U links store placeholders that are filled in at play time.
 
 ## Important limitations before public use
 
 - The addon routes are still a generic compatibility scaffold; verify the exact Nuvio addon contract before depending on playback.
-- Series season/episode expansion and manual TMDB match correction are not complete.
+- Xtream series are listed but cannot be played yet (season/episode lists are not implemented). M3U series episodes play individually.
+- Manual TMDB match correction is not complete.
 - M3U grouping/classification varies by provider.
 - This prototype still needs production hardening (especially outbound URL/SSRF protection, rate limiting, import batching, and playback URL handling) before being advertised for public multi-user use.
 - TMDB API keys and IPTV credentials are encrypted at rest with `ENCRYPTION_KEY`, but the running application can decrypt them. Protect the Cloudflare account and keep the key private.
