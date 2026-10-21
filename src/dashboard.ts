@@ -186,7 +186,7 @@ const PAGE_JS = String.raw`(function () {
     var shown = cats.filter(function (c) { return !c.hidden && c.item_count > 0 && !c.mergedInto; }).length;
     var titles = cats.reduce(function (t, c) { return t + (c.isMerge ? 0 : c.item_count); }, 0);
     return '<div class="page-head"><div><h2>Rows</h2><div class="muted">The rows everyone in your library sees in Nuvio. Only you can change them.</div></div></div>' +
-      '<div class="cards"><div class="stat"><strong>' + n(cats.length) + '</strong><span>Categories</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
+      '<div class="cards"><div class="stat"><strong>' + n(cats.filter(function (c) { return !c.mergedInto; }).length) + '</strong><span>Rows</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
       '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + smartPanel() + rulesPanel() +
       '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="smart">Smart</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
       '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
@@ -356,15 +356,25 @@ const PAGE_JS = String.raw`(function () {
     var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + pick + '<div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta">' + meta + '</div></div></div>' +
       '<div class="catalog-actions"><button class="small" data-view="' + c.id + '">View</button>' + buttons + '</div></div>';
     if (indent) return row;
-    return '<div data-group="' + c.id + '">' + row + members.map(function (m) { return rowHtml(m, true); }).join('') + '</div>';
+    if (!members.length) return '<div data-group="' + c.id + '">' + row + '</div>';
+    var open = S.open && S.open[c.id];
+    var toggle = '<button class="small" data-expand="' + c.id + '" style="margin:0 0 8px 34px;background:transparent;border-color:transparent;color:var(--muted)">' + (open ? '▾ Hide' : '▸ Show') + ' the ' + members.length + ' categories in this row</button>';
+    return '<div data-group="' + c.id + '">' + row + toggle + (open ? members.map(function (m) { return rowHtml(m, true); }).join('') : '') + '</div>';
   }
   function rowList() {
     var list = visibleRows();
     if (!list.length) return '<div class="empty">No categories match.</div>';
-    // Categories inside a merged row are listed under it (unless the merged row itself is filtered out).
-    var listed = {};
-    list.forEach(function (c) { listed[c.id] = true; });
-    return list.filter(function (c) { return !c.mergedInto || !listed[c.mergedInto]; }).map(function (c) { return rowHtml(c, false); }).join('');
+    // Categories inside a merged row never get their own line; they fold into the merged row.
+    // If one matches the filter, its merged row is listed (opened) instead.
+    var out = [], seen = {};
+    list.forEach(function (c) {
+      var row = c.mergedInto ? find(c.mergedInto) : c;
+      if (!row || seen[row.id]) return;
+      if (c.mergedInto && (S.q || S.status !== 'all')) { S.open = S.open || {}; S.open[row.id] = true; }
+      seen[row.id] = true;
+      out.push(row);
+    });
+    return out.map(function (c) { return rowHtml(c, false); }).join('');
   }
   function wireRows() {
     var type = el('rowType'); if (!type) return;
@@ -531,6 +541,13 @@ const PAGE_JS = String.raw`(function () {
   // Changes are applied in the page directly, so the dashboard doesn't have to reload everything.
   function wireRowButtons() {
     wireDrag();
+    document.querySelectorAll('[data-expand]').forEach(function (b) {
+      b.onclick = function () {
+        S.open = S.open || {};
+        S.open[b.dataset.expand] = !S.open[b.dataset.expand];
+        el('rowList').innerHTML = rowList(); wireRowButtons();
+      };
+    });
     document.querySelectorAll('[data-smart-refresh]').forEach(function (b) {
       b.onclick = async function () {
         b.disabled = true;
