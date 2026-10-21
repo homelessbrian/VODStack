@@ -414,7 +414,8 @@ export async function providerRequest(env: Env, cfg: SourceConfig, target: URL, 
     r = relay
       ? await fetch(relay + '/fetch', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-relay-key': env.RELAY_KEY! },
+          // The relay compresses provider lists; fetch() unpacks them automatically.
+          headers: { 'content-type': 'application/json', 'x-relay-key': env.RELAY_KEY!, 'accept-encoding': 'gzip' },
           body: JSON.stringify({ url: target.toString(), userAgent }),
           signal: controller.signal,
         })

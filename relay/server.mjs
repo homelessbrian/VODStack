@@ -6,7 +6,7 @@
 //
 // Endpoints:
 //   GET  /health -> {"ok":true}   (also used to wake the service after it sleeps)
-//   POST /fetch  -> streams the target URL's response back
+//   POST /fetch  -> streams the target URL's response back (gzip-compressed when accepted)
 //        headers: x-relay-key: <RELAY_KEY>
 //        body:    {"url": "http(s)://…", "userAgent": "…"}
 // The target URL goes in the POST body, not the address, so provider passwords never
@@ -17,6 +17,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
+import { createGzip } from 'node:zlib';
 
 const KEY = process.env.RELAY_KEY || '';
 const PORT = Number(process.env.PORT) || 10000;
@@ -92,13 +93,19 @@ const server = http.createServer(async (req, res) => {
       return send(res, 502, { error: controller.signal.aborted ? 'Provider did not respond within 60 seconds.' : `Could not reach provider: ${e.cause?.code || e.message}` });
     }
     clearTimeout(timer);
+    // Provider lists are large JSON/text; gzip makes them roughly 10x smaller on the way to VODStack
+    // (Render's free plan includes 5 GB of outbound data a month).
+    const gzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
     res.writeHead(upstream.status, {
       'content-type': upstream.headers.get('content-type') || 'application/octet-stream',
       'cache-control': 'no-store',
       'x-upstream-status': String(upstream.status),
+      ...(gzip ? { 'content-encoding': 'gzip' } : {}),
     });
     if (!upstream.body) return res.end();
-    Readable.fromWeb(upstream.body).on('error', () => res.destroy()).pipe(res);
+    const src = Readable.fromWeb(upstream.body).on('error', () => res.destroy());
+    if (gzip) src.pipe(createGzip({ level: 6 })).on('error', () => res.destroy()).pipe(res);
+    else src.pipe(res);
   } catch (e) {
     if (!res.headersSent) send(res, 500, { error: e.message || 'Relay error.' });
     else res.destroy();

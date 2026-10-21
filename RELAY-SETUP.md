@@ -52,3 +52,31 @@ If the provider blocks Render as well, VODStack will say so. In that case keep u
 
 To stop using the relay, delete the two secrets in Cloudflare. To remove it completely,
 delete the **vodstack-relay** service in Render.
+
+## Alternative: Deno Deploy (recommended)
+
+Deno Deploy's free plan wakes in a fraction of a second (no one-minute wait), has no monthly hours
+limit and includes 20 GB of data a month (Render: 5 GB). The relay code for it is `relay/deno.ts`.
+
+1. Go to [console.deno.com](https://console.deno.com) and sign in with **GitHub**. Create an
+   organization (any name).
+2. Press **+ New App** and pick the **VODStack** repository. If it isn't listed, use
+   **Configure GitHub App permissions** to give Deno Deploy access to it.
+3. In **App Config**, press **Edit build config**:
+   - Framework preset: **No Preset**
+   - Install command: *(empty)* · Build command: *(empty)*
+   - Runtime configuration: **Dynamic**
+   - Dynamic Entrypoint: `relay/deno.ts`
+   Close the drawer to save.
+4. Press **Add/Edit environment variables** → **+ Add variable**: name `RELAY_KEY`, value = the
+   same key VODStack already uses (copy it from Render → vodstack-relay → Environment), type
+   **Secret**, contexts **Production** and **Development**. **Save**.
+5. Press **Create App** and wait for the build. Copy the app's URL from the top of the build page.
+   Opening `<that URL>/health` should show `{"ok":true,…,"host":"deno"}`.
+6. In Cloudflare (**Workers & Pages → vodstack → Settings → Variables and Secrets**), change
+   `RELAY_URL` to the Deno URL and deploy. `RELAY_KEY` stays the same.
+7. Press **Refresh now** in VODStack. If the provider refuses the Deno relay, put `RELAY_URL` back
+   to the Render URL; nothing else changes.
+
+Both relays compress what they send to VODStack (about 10× smaller), so data limits are a
+non-issue either way.
