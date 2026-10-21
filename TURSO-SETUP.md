@@ -57,7 +57,10 @@ On the **Rows** page:
 - **Smart rows**: rows built from TMDB lists (Trending today/this week, Popular, Top rated, Now in
   theaters, Airing now, or Popular in a genre), showing only titles your provider has, in TMDB's
   order. They refresh themselves every few hours. **Add starter set** adds trending, popular and top
-  rated for movies and series in one click. Needs the TMDB key.
+  rated for movies and series in one click. **Build your own…** makes a custom one: genres (all or any),
+  decade or years, sort (popular, highest rated, most voted, newest, oldest, box office), minimum
+  rating, original language, US age rating, and how many titles (it keeps looking until it finds
+  that many you have). **Preview** before saving; **Edit** later. Needs the TMDB key.
 
 Titles the provider removes are deleted automatically 90 days later (they come back with their
 TMDB match if the provider re-adds them before then).

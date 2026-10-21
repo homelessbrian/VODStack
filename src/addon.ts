@@ -132,7 +132,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     return cached(
       {
         id: 'com.vodstack.addon',
-        version: '0.3.0',
+        version: '0.4.0',
         name: 'VODStack',
         description: lib ? `${lib.name}: movies and series, with search.` : 'Your IPTV provider’s movies and series.',
         types: ['movie', 'series'],
@@ -144,8 +144,9 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
         ],
         catalogs: [
           ...cats.map((c) => ({ type: c.media_type, id: `vodstack_${c.id}`, name: c.name, extra: [{ name: 'skip', isRequired: false }] })),
-          { type: 'movie', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
-          { type: 'series', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
+          // Search results are grouped under these names in Nuvio.
+          { type: 'movie', id: 'vodstack_search', name: 'Movies', extra: [{ name: 'search', isRequired: true }] },
+          { type: 'series', id: 'vodstack_search', name: 'Series', extra: [{ name: 'search', isRequired: true }] },
         ],
         behaviorHints: { configurable: false, configurationRequired: false },
       },

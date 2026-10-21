@@ -438,7 +438,7 @@ export type CatalogView = {
   mergedInto: number | null;
   createdAt: number | null;
   titleOrder: 'az' | 'recent';
-  smart: { list: string; type: MediaType; genre?: number; at: number | null } | null;
+  smart: { list: string; type: MediaType; genre?: number; custom?: Record<string, unknown>; at: number | null } | null;
   matchedCount: number;
 };
 /** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */

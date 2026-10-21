@@ -179,9 +179,10 @@ const PAGE_JS = String.raw`(function () {
     return '<div class="panel"><h3>Smart rows</h3><p>Rows built from TMDB lists, like “Trending today”, showing only titles your provider has. They refresh themselves every few hours. Needs a TMDB key (Settings).</p>' +
       '<div class="row"><select id="smartType" style="max-width:120px"><option value="movie">Movies</option><option value="series">Series</option></select><select id="smartList"></select><select id="smartGenre" style="display:none"></select></div>' +
       '<div class="row" style="margin-top:8px"><input id="smartName" placeholder="Row name (optional)"></div>' +
-      '<div class="actions"><button class="small primary" id="addSmart">Add smart row</button><button class="small" id="addStarter">Add starter set (trending, popular, top rated)</button></div><div id="msgSmart"></div></div>';
+      '<div class="actions"><button class="small primary" id="addSmart">Add smart row</button><button class="small" id="addStarter">Add starter set (trending, popular, top rated)</button><button class="small" id="openBuilder">Build your own…</button></div><div id="msgSmart"></div><div id="builder"></div></div>';
   }
   async function wireSmart() {
+    if (el('openBuilder')) el('openBuilder').onclick = function () { openBuilder(null).catch(function (e) { say('msgSmart', e.message); }); };
     var opts;
     try { opts = await api('/api/smart/options'); } catch (e) { return; }
     var type = el('smartType'), list = el('smartList'), genre = el('smartGenre');
@@ -215,6 +216,82 @@ const PAGE_JS = String.raw`(function () {
       await load(); say('msgSmart', 'Added ' + added + ' smart rows' + (skipped ? ' (' + skipped + ' you already had)' : '') + '. They’re at the top; drag them where you like.', true);
     };
   }
+  // ---------- smart row builder ----------
+  var DECADES = [1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020];
+  function builderHtml(opts, def, editing) {
+    def = def || { type: 'movie', custom: { genres: [], genreMode: 'all', sort: 'popular', limit: 25 } };
+    var c = def.custom || {};
+    var sel = function (id, options, value, style) {
+      return '<select id="' + id + '"' + (style ? ' style="' + style + '"' : '') + '>' + options.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(value == null ? '' : value) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+    };
+    var decade = c.yearFrom && c.yearTo && c.yearFrom % 10 === 0 && c.yearTo === c.yearFrom + 9 ? c.yearFrom : (c.yearFrom || c.yearTo ? 'custom' : '');
+    return '<div class="panel" style="margin:12px 0;background:var(--panel2)"><h3>' + (editing ? 'Edit smart row' : 'Build your own smart row') + '</h3><p>Example: Movies · Action · 1990s · Most popular · 25.</p>' +
+      '<div class="formgrid">' +
+      '<div><label>Type</label>' + sel('bType', [['movie', 'Movies'], ['series', 'Series']], def.type) + '</div>' +
+      '<div><label>How many titles</label><input id="bLimit" type="number" min="5" max="100" value="' + esc(c.limit || 25) + '"></div>' +
+      '<div class="wide"><label>Genres <span class="help">(none = all genres)</span></label><div id="bGenres" style="display:flex;flex-wrap:wrap;gap:6px 14px"></div></div>' +
+      '<div><label>Genres must</label>' + sel('bMode', [['all', 'Match all ticked'], ['any', 'Match any ticked']], c.genreMode) + '</div>' +
+      '<div><label>Sort by</label>' + sel('bSort', Object.keys(opts.sorts).map(function (k) { return [k, opts.sorts[k]]; }), c.sort) + '</div>' +
+      '<div><label>Decade</label>' + sel('bDecade', [['', 'Any time']].concat(DECADES.map(function (d) { return [d, d + 's']; })).concat([['custom', 'Custom years']]), decade) + '</div>' +
+      '<div id="bYears" style="display:' + (decade === 'custom' ? 'flex' : 'none') + ';gap:8px;align-items:flex-end"><div><label>From</label><input id="bFrom" type="number" placeholder="1990" value="' + esc(c.yearFrom || '') + '"></div><div><label>To</label><input id="bTo" type="number" placeholder="1999" value="' + esc(c.yearTo || '') + '"></div></div>' +
+      '<div><label>Minimum rating</label>' + sel('bRating', [['', 'Any'], [5, '5+'], [6, '6+'], [7, '7+'], [8, '8+']], c.minRating) + '</div>' +
+      '<div><label>Original language</label>' + sel('bLang', [['', 'Any']].concat(Object.keys(opts.languages).map(function (k) { return [k, opts.languages[k]]; })), c.language) + '</div>' +
+      '<div id="bCertWrap"><label>Age rating (movies, US)</label>' + sel('bCert', [['', 'Any']].concat(opts.certs.map(function (x) { return [x, x + ' or lower']; })), c.maxCert) + '</div>' +
+      '<div class="wide"><label>Row name <span class="help">(leave empty for an automatic name)</span></label><input id="bName" placeholder="' + esc(editing ? editing.name : '') + '" value="' + esc(editing && editing.renamed ? editing.name : '') + '"></div>' +
+      '</div><div class="actions"><button class="small" id="bPreview">Preview</button><button class="small primary" id="bSave">' + (editing ? 'Save changes' : 'Save smart row') + '</button><button class="small" id="bCancel">Cancel</button></div><div id="bMsg"></div><div id="bPreviewList"></div></div>';
+  }
+  async function openBuilder(editing) {
+    var opts = await api('/api/smart/options');
+    var box = el('builder');
+    box.innerHTML = builderHtml(opts, editing ? editing.smart : null, editing);
+    var picked = {};
+    ((editing && editing.smart.custom && editing.smart.custom.genres) || []).forEach(function (g) { picked[g] = true; });
+    function genres() {
+      var g = opts.genres[el('bType').value];
+      el('bGenres').innerHTML = Object.keys(g).map(function (id) { return '<label style="display:flex;gap:5px;align-items:center;margin:0;color:var(--text)"><input type="checkbox" data-genre="' + id + '" style="width:auto"' + (picked[id] ? ' checked' : '') + '>' + esc(g[id]) + '</label>'; }).join('');
+      document.querySelectorAll('[data-genre]').forEach(function (b) { b.onchange = function () { picked[b.dataset.genre] = b.checked; }; });
+      el('bCertWrap').style.display = el('bType').value === 'movie' ? 'block' : 'none';
+    }
+    el('bType').onchange = function () { picked = {}; genres(); };
+    el('bDecade').onchange = function () { el('bYears').style.display = el('bDecade').value === 'custom' ? 'flex' : 'none'; };
+    genres();
+    function read() {
+      var d = el('bDecade').value;
+      var custom = {
+        genres: Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number),
+        genreMode: el('bMode').value, sort: el('bSort').value, limit: Number(el('bLimit').value) || 25,
+        minRating: Number(el('bRating').value) || undefined, language: el('bLang').value || undefined,
+        maxCert: el('bType').value === 'movie' ? el('bCert').value || undefined : undefined,
+      };
+      if (d === 'custom') { custom.yearFrom = Number(el('bFrom').value) || undefined; custom.yearTo = Number(el('bTo').value) || undefined; }
+      else if (d) { custom.yearFrom = Number(d); custom.yearTo = Number(d) + 9; }
+      return { list: 'custom', type: el('bType').value, custom: custom, name: el('bName').value.trim() };
+    }
+    el('bCancel').onclick = function () { box.innerHTML = ''; };
+    el('bPreview').onclick = async function () {
+      el('bPreview').disabled = true;
+      say('bMsg', 'Looking through TMDB…', true);
+      try {
+        var r = await api('/api/smart/preview', { method: 'POST', body: read() });
+        say('bMsg', 'Found ' + n(r.count) + ' of your titles. Name if you leave it empty: “' + r.name + '”.', true);
+        el('bPreviewList').innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">' + r.titles.map(function (t) {
+          var img = t.tmdb_poster || t.poster_url;
+          return '<div style="width:72px;font-size:11px;color:var(--muted)">' + (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" style="width:72px;height:108px;object-fit:cover;border-radius:6px;background:var(--panel)">' : '<div style="width:72px;height:108px;border-radius:6px;background:var(--panel)"></div>') + '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.title) + '</div></div>';
+        }).join('') + '</div>';
+      } catch (e) { say('bMsg', e.message); }
+      el('bPreview').disabled = false;
+    };
+    el('bSave').onclick = async function () {
+      el('bSave').disabled = true;
+      say('bMsg', 'Saving…', true);
+      try {
+        var r = editing ? await api('/api/smart/' + editing.id, { method: 'PATCH', body: read() }) : await api('/api/smart', { method: 'POST', body: read() });
+        await load(); say('msgSmart', (editing ? 'Updated' : 'Added') + ': ' + n(r.count) + ' titles.', true);
+      } catch (e) { say('bMsg', e.message); el('bSave').disabled = false; }
+    };
+    if (box.scrollIntoView) box.scrollIntoView({ block: 'nearest' });
+  }
+
   // After an import or matching run, rebuild smart rows so new titles show up in them right away.
   async function refreshSmartRows(show) {
     var rows = S.data.catalogs.filter(function (c) { return c.smart; });
@@ -249,7 +326,7 @@ const PAGE_JS = String.raw`(function () {
       ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
       : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
         (c.isMerge ? '<button class="small" data-unmerge="' + c.id + '">Unmerge</button>' : '') +
-        (c.smart ? '<button class="small" data-smart-refresh="' + c.id + '">Refresh</button><button class="small danger" data-smart-delete="' + c.id + '">Delete</button>'
+        (c.smart ? (c.smart.list === 'custom' ? '<button class="small" data-smart-edit="' + c.id + '">Edit</button>' : '') + '<button class="small" data-smart-refresh="' + c.id + '">Refresh</button><button class="small danger" data-smart-delete="' + c.id + '">Delete</button>'
           : '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>') +
         '<button class="small" data-move="' + c.id + '" data-dir="top" title="Move to top">⤒</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button><button class="small" data-move="' + c.id + '" data-dir="bottom" title="Move to bottom">⤓</button>';
     var grip = indent ? '' : '<span data-drag="' + c.id + '" title="Drag to reorder" style="cursor:grab;touch-action:none;user-select:none;color:var(--muted);font-size:18px;line-height:1;padding:2px 4px">⠿</span>';
@@ -417,6 +494,9 @@ const PAGE_JS = String.raw`(function () {
         try { var r = await api('/api/smart/' + b.dataset.smartRefresh + '/refresh', { method: 'POST', body: {} }); await load(); say('msg', 'Smart row updated: ' + n(r.count) + ' titles.', true); }
         catch (e) { say('msg', e.message); b.disabled = false; }
       };
+    });
+    document.querySelectorAll('[data-smart-edit]').forEach(function (b) {
+      b.onclick = function () { openBuilder(find(b.dataset.smartEdit)).catch(function (e) { say('msg', e.message); }); };
     });
     document.querySelectorAll('[data-smart-delete]').forEach(function (b) {
       b.onclick = async function () {

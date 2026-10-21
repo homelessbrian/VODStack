@@ -9,7 +9,7 @@ import { dashboard } from './dashboard';
 import { handleAddon } from './addon';
 import { getDb } from './db';
 import { MATCH_BATCH, matchBatch, searchTerms, tmdbBase } from './tmdb';
-import { GENRES, SMART_LISTS, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
+import { CERTS, GENRES, LANGUAGES, SMART_LISTS, SORT_LABELS, buildSmartIds, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
 import {
   type Env,
   type SourceConfig,
@@ -547,7 +547,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   // ---- smart rows (owner only): TMDB lists filtered to this library ----
   if (method === 'GET' && path === '/api/smart/options') {
     const lists = Object.entries(SMART_LISTS).map(([id, l]) => ({ id, label: l.label, movie: !!l.movie, series: !!l.series, genre: !!l.discover }));
-    return json({ lists, genres: GENRES });
+    return json({ lists, genres: GENRES, languages: LANGUAGES, certs: CERTS, sorts: SORT_LABELS });
   }
   if (method === 'POST' && path === '/api/smart') {
     const lib = await ownedLibrary(env, setupId);
@@ -557,7 +557,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!hasKey) return json({ error: 'Smart rows need a TMDB key (Settings → TMDB matching).' }, 400);
     const rows = await catalogsFor(env, setupId, lib.id);
     const defJson = JSON.stringify(def);
-    if (rows.some((c) => c.smart && JSON.stringify({ list: c.smart.list, type: c.smart.type, ...(c.smart.genre ? { genre: c.smart.genre } : {}) }) === defJson))
+    if (
+      def.list !== 'custom' &&
+      rows.some((c) => c.smart && c.smart.list === def.list && c.smart.type === def.type && (c.smart.genre || 0) === (def.genre || 0))
+    )
       return json({ error: 'You already have that smart row.' }, 400);
     // New smart rows go to the top of the list.
     const top = rows.length ? Math.min(...rows.map((c) => c.order)) - 1 : 0;
@@ -575,6 +578,35 @@ async function route(request: Request, env: Env): Promise<Response> {
       await env.DB.prepare('DELETE FROM catalogs WHERE id=?').bind(row!.id).run();
       throw e;
     }
+  }
+  if (method === 'POST' && path === '/api/smart/preview') {
+    // Try a smart row's settings without saving: how many titles, and the first few.
+    const lib = await ownedLibrary(env, setupId);
+    const def = validSmartDef(body);
+    if (!def) return json({ error: 'Pick a list (and a genre, for genre lists).' }, 400);
+    const ids = await buildSmartIds(env, def, lib.id, setupId);
+    const rows = (
+      await env.DB.prepare('SELECT id,title,year,poster_url,tmdb_poster FROM vod_items WHERE id IN (SELECT value FROM json_each(?))')
+        .bind(JSON.stringify(ids.slice(0, 30)))
+        .all<any>()
+    ).results;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return json({ count: ids.length, name: smartLabel(def), titles: ids.slice(0, 30).map((i) => byId.get(i)).filter(Boolean) });
+  }
+  const smartEdit = path.match(/^\/api\/smart\/(\d+)$/);
+  if (method === 'PATCH' && smartEdit) {
+    // Change a smart row's settings (and name), then rebuild it.
+    const lib = await ownedLibrary(env, setupId);
+    const def = validSmartDef(body);
+    if (!def) return json({ error: 'Pick a list (and a genre, for genre lists).' }, 400);
+    const id = Number(smartEdit[1]);
+    const r = await env.DB.prepare('UPDATE catalogs SET smart_json=?,source_category_name=?,media_type=? WHERE id=? AND library_id=? AND smart_json IS NOT NULL')
+      .bind(JSON.stringify(def), str(body.name, 150) || smartLabel(def), def.type, id, lib.id)
+      .run();
+    if (!r.meta.changes) return json({ error: 'Smart row not found.' }, 404);
+    // A new name replaces any earlier rename.
+    if (str(body.name, 150)) await env.DB.prepare('UPDATE catalog_prefs SET display_name=NULL WHERE setup_id=? AND catalog_id=?').bind(setupId, id).run();
+    return json({ ok: true, count: await refreshSmartRow(env, { id, library_id: lib.id, smart_json: JSON.stringify(def) }, setupId) });
   }
   const smartRefresh = path.match(/^\/api\/smart\/(\d+)\/refresh$/);
   if (method === 'POST' && smartRefresh) {
