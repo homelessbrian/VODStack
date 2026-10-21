@@ -9,6 +9,7 @@ import { dashboard } from './dashboard';
 import { handleAddon } from './addon';
 import { getDb } from './db';
 import { MATCH_BATCH, matchBatch, searchTerms, tmdbBase } from './tmdb';
+import { GENRES, SMART_LISTS, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
 import {
   type Env,
   type SourceConfig,
@@ -473,7 +474,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       .bind(lib.id)
       .run();
     await env.DB.prepare(
-      'UPDATE catalogs SET item_count=0 WHERE library_id=?1 AND item_count>0 AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)',
+      'UPDATE catalogs SET item_count=0 WHERE library_id=?1 AND item_count>0 AND smart_json IS NULL AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)',
     )
       .bind(lib.id)
       .run();
@@ -521,10 +522,26 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (method === 'GET' && titlesMatch) {
     const lib = await ownedLibrary(env, setupId);
     const id = Number(titlesMatch[1]);
-    const cat = await env.DB.prepare('SELECT id,is_merge FROM catalogs WHERE id=? AND library_id=?').bind(id, lib.id).first<{ id: number; is_merge: number }>();
+    const cat = await env.DB.prepare('SELECT id,is_merge,smart_ids FROM catalogs WHERE id=? AND library_id=?')
+      .bind(id, lib.id)
+      .first<{ id: number; is_merge: number; smart_ids: string | null }>();
     if (!cat) return json({ error: 'Row not found.' }, 404);
     const skip = Math.max(0, Math.min(50000, Number(url.searchParams.get('skip')) || 0));
     const q = str(url.searchParams.get('q'), 60).toLowerCase();
+    if (cat.smart_ids !== null) {
+      // Smart row: in TMDB's order.
+      const all: number[] = JSON.parse(cat.smart_ids || '[]');
+      const rows = (
+        await env.DB.prepare(
+          'SELECT id,title,year,poster_url,tmdb_poster,imdb_id,tmdb_match_status,is_available,catalog_id FROM vod_items WHERE id IN (SELECT value FROM json_each(?))',
+        )
+          .bind(JSON.stringify(all))
+          .all<any>()
+      ).results;
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const list = all.map((i) => byId.get(i)).filter((r) => r && (!q || r.title.toLowerCase().includes(q)));
+      return json({ titles: list.slice(skip, skip + 100), more: list.length > skip + 100 });
+    }
     const ids = cat.is_merge
       ? (await env.DB.prepare('SELECT id FROM catalogs WHERE merged_into=? AND library_id=?').bind(id, lib.id).raw<[number]>()).map((r) => r[0])
       : [id];
@@ -543,6 +560,57 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json({ titles: all.slice(skip, skip + 100), more: all.length > skip + 100 });
   }
 
+  // ---- smart rows (owner only): TMDB lists filtered to this library ----
+  if (method === 'GET' && path === '/api/smart/options') {
+    const lists = Object.entries(SMART_LISTS).map(([id, l]) => ({ id, label: l.label, movie: !!l.movie, series: !!l.series, genre: !!l.discover }));
+    return json({ lists, genres: GENRES });
+  }
+  if (method === 'POST' && path === '/api/smart') {
+    const lib = await ownedLibrary(env, setupId);
+    const def = validSmartDef(body);
+    if (!def) return json({ error: 'Pick a list (and a genre, for genre lists).' }, 400);
+    const hasKey = await env.DB.prepare('SELECT 1 AS k FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').first();
+    if (!hasKey) return json({ error: 'Smart rows need a TMDB key (Settings → TMDB matching).' }, 400);
+    const rows = await catalogsFor(env, setupId, lib.id);
+    const defJson = JSON.stringify(def);
+    if (rows.some((c) => c.smart && JSON.stringify({ list: c.smart.list, type: c.smart.type, ...(c.smart.genre ? { genre: c.smart.genre } : {}) }) === defJson))
+      return json({ error: 'You already have that smart row.' }, 400);
+    // New smart rows go to the top of the list.
+    const top = rows.length ? Math.min(...rows.map((c) => c.order)) - 1 : 0;
+    const row = await env.DB.prepare(
+      `INSERT INTO catalogs(library_id,media_type,source_category_id,source_category_name,item_count,sort_order,smart_json,title_order)
+       VALUES(?,?,?,?,0,?,?,'az') RETURNING id`,
+    )
+      .bind(lib.id, def.type, 'smart:' + uuid(), str(body.name, 150) || smartLabel(def), top, defJson)
+      .first<{ id: number }>();
+    try {
+      const count = await refreshSmartRow(env, { id: row!.id, library_id: lib.id, smart_json: defJson }, setupId);
+      return json({ ok: true, id: row!.id, count });
+    } catch (e) {
+      // Don't leave a half-made row behind (it would block trying again).
+      await env.DB.prepare('DELETE FROM catalogs WHERE id=?').bind(row!.id).run();
+      throw e;
+    }
+  }
+  const smartRefresh = path.match(/^\/api\/smart\/(\d+)\/refresh$/);
+  if (method === 'POST' && smartRefresh) {
+    const lib = await ownedLibrary(env, setupId);
+    const row = await env.DB.prepare('SELECT id,library_id,smart_json FROM catalogs WHERE id=? AND library_id=? AND smart_json IS NOT NULL')
+      .bind(Number(smartRefresh[1]), lib.id)
+      .first<{ id: number; library_id: string; smart_json: string }>();
+    if (!row) return json({ error: 'Smart row not found.' }, 404);
+    return json({ ok: true, count: await refreshSmartRow(env, row, setupId) });
+  }
+  const smartDelete = path.match(/^\/api\/smart\/(\d+)$/);
+  if (method === 'DELETE' && smartDelete) {
+    const lib = await ownedLibrary(env, setupId);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM catalog_prefs WHERE catalog_id=?').bind(Number(smartDelete[1])),
+      env.DB.prepare('DELETE FROM catalogs WHERE id=? AND library_id=? AND smart_json IS NOT NULL').bind(Number(smartDelete[1]), lib.id),
+    ]);
+    return json({ ok: true });
+  }
+
   // ---- merged rows (owner only) ----
   // A merged row only points at its categories; titles never move, so new titles in any of
   // the original categories show up in the merged row automatically after each refresh.
@@ -558,6 +626,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const picked = [...new Set<number>((Array.isArray(body.ids) ? body.ids : []).map(Number))].map((i) => byId.get(i)).filter(Boolean) as typeof all;
     const targets = picked.filter((c) => c.isMerge);
     const members = picked.filter((c) => !c.isMerge);
+    if (picked.some((c) => c.smart)) return json({ error: 'Smart rows can’t be merged.' }, 400);
     if (targets.length > 1) return json({ error: 'Pick at most one merged row to add to.' }, 400);
     if (!members.length || (!targets.length && members.length < 2))
       return json({ error: 'Pick at least two categories to merge (or a merged row plus the categories to add to it).' }, 400);
@@ -725,5 +794,7 @@ export default {
   // otherwise pressing play on a series episode could wait a minute for it to wake.
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
     ctx.waitUntil(wakeRelay(env));
+    // Keep smart rows (TMDB lists) fresh, a couple per run.
+    if (env.TURSO_URL) ctx.waitUntil(refreshStaleSmartRows({ ...env, DB: getDb(env.TURSO_URL, env.TURSO_TOKEN) }));
   },
 };

@@ -148,6 +148,7 @@ const PAGE_JS = String.raw`(function () {
     shown: function (c) { return !c.hidden && !c.mergedInto && c.item_count > 0; },
     hidden: function (c) { return c.hidden; },
     merged: function (c) { return c.isMerge || c.mergedInto; },
+    smart: function (c) { return !!c.smart; },
     new: isNew,
     empty: function (c) { return !c.item_count; },
   };
@@ -165,9 +166,63 @@ const PAGE_JS = String.raw`(function () {
     var titles = cats.reduce(function (t, c) { return t + (c.isMerge ? 0 : c.item_count); }, 0);
     return '<div class="page-head"><div><h2>Rows</h2><div class="muted">The rows everyone in your library sees in Nuvio. Only you can change them.</div></div></div>' +
       '<div class="cards"><div class="stat"><strong>' + n(cats.length) + '</strong><span>Categories</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
-      '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + rulesPanel() +
-      '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
+      '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + smartPanel() + rulesPanel() +
+      '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="smart">Smart</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
       '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
+  }
+  var STARTER = [['trending_day', 'movie'], ['trending_day', 'series'], ['popular', 'movie'], ['popular', 'series'], ['top_rated', 'movie'], ['top_rated', 'series']];
+  function smartPanel() {
+    return '<div class="panel"><h3>Smart rows</h3><p>Rows built from TMDB lists, like “Trending today”, showing only titles your provider has. They refresh themselves every few hours. Needs a TMDB key (Settings).</p>' +
+      '<div class="row"><select id="smartType" style="max-width:120px"><option value="movie">Movies</option><option value="series">Series</option></select><select id="smartList"></select><select id="smartGenre" style="display:none"></select></div>' +
+      '<div class="row" style="margin-top:8px"><input id="smartName" placeholder="Row name (optional)"></div>' +
+      '<div class="actions"><button class="small primary" id="addSmart">Add smart row</button><button class="small" id="addStarter">Add starter set (trending, popular, top rated)</button></div><div id="msgSmart"></div></div>';
+  }
+  async function wireSmart() {
+    var opts;
+    try { opts = await api('/api/smart/options'); } catch (e) { return; }
+    var type = el('smartType'), list = el('smartList'), genre = el('smartGenre');
+    if (!type) return;
+    function fill() {
+      var t = type.value;
+      list.innerHTML = opts.lists.filter(function (l) { return l[t]; }).map(function (l) { return '<option value="' + l.id + '">' + esc(l.label) + '</option>'; }).join('');
+      var g = opts.genres[t];
+      genre.innerHTML = Object.keys(g).map(function (id) { return '<option value="' + id + '">' + esc(g[id]) + '</option>'; }).join('');
+      genre.style.display = list.value === 'genre' ? 'block' : 'none';
+    }
+    type.onchange = fill;
+    list.onchange = function () { genre.style.display = list.value === 'genre' ? 'block' : 'none'; };
+    fill();
+    el('addSmart').onclick = async function () {
+      el('addSmart').disabled = true;
+      say('msgSmart', 'Building the row from TMDB…', true);
+      try {
+        var r = await api('/api/smart', { method: 'POST', body: { type: type.value, list: list.value, genre: Number(genre.value), name: el('smartName').value.trim() } });
+        await load(); say('msgSmart', 'Added: ' + n(r.count) + ' of your titles are on that list.', true);
+      } catch (e) { say('msgSmart', e.message); el('addSmart').disabled = false; }
+    };
+    el('addStarter').onclick = async function () {
+      el('addStarter').disabled = true;
+      var added = 0, skipped = 0;
+      for (var i = 0; i < STARTER.length; i++) {
+        say('msgSmart', 'Adding ' + (i + 1) + ' of ' + STARTER.length + '…', true);
+        try { await api('/api/smart', { method: 'POST', body: { list: STARTER[i][0], type: STARTER[i][1] } }); added++; }
+        catch (e) { if (/already/.test(e.message)) skipped++; else { say('msgSmart', e.message); el('addStarter').disabled = false; return; } }
+      }
+      await load(); say('msgSmart', 'Added ' + added + ' smart rows' + (skipped ? ' (' + skipped + ' you already had)' : '') + '. They’re at the top; drag them where you like.', true);
+    };
+  }
+  // After an import or matching run, rebuild smart rows so new titles show up in them right away.
+  async function refreshSmartRows(show) {
+    var rows = S.data.catalogs.filter(function (c) { return c.smart; });
+    for (var i = 0; i < rows.length; i++) {
+      show('Updating smart rows… ' + (i + 1) + ' / ' + rows.length, true);
+      try { await api('/api/smart/' + rows[i].id + '/refresh', { method: 'POST', body: {} }); } catch (e) {}
+    }
+  }
+  function ago(t) {
+    if (!t) return 'not built yet';
+    var m = Math.round((Date.now() / 1000 - t) / 60);
+    return m < 60 ? 'updated ' + m + ' min ago' : 'updated ' + Math.round(m / 60) + ' h ago';
   }
   function rulesPanel() {
     var st = S.data.library.settings || { hideNew: false, hideRules: [] };
@@ -181,17 +236,19 @@ const PAGE_JS = String.raw`(function () {
     var parent = c.mergedInto ? find(c.mergedInto) : null;
     var members = c.isMerge ? cats.filter(function (m) { return m.mergedInto === c.id; }) : [];
     var meta = '<span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' +
-      (c.isMerge ? '<span class="pill">Merged</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
-      (c.renamed && !c.isMerge ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + n(c.item_count) + ' titles · ' +
+      (c.isMerge ? '<span class="pill">Merged</span>' : '') + (c.smart ? '<span class="pill" style="color:var(--accent)">Smart · TMDB</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
+      (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles · ' +
       (parent ? 'Shown inside “' + esc(parent.name) + '”' : c.item_count ? (c.hidden ? 'Hidden' : 'Shown') : 'Empty');
     var buttons = parent
       ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
       : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
         (c.isMerge ? '<button class="small" data-unmerge="' + c.id + '">Unmerge</button>' : '') +
-        '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>' +
+        (c.smart ? '<button class="small" data-smart-refresh="' + c.id + '">Refresh</button><button class="small danger" data-smart-delete="' + c.id + '">Delete</button>'
+          : '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>') +
         '<button class="small" data-move="' + c.id + '" data-dir="top" title="Move to top">⤒</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button><button class="small" data-move="' + c.id + '" data-dir="bottom" title="Move to bottom">⤓</button>';
     var grip = indent ? '' : '<span data-drag="' + c.id + '" title="Drag to reorder" style="cursor:grab;touch-action:none;user-select:none;color:var(--muted);font-size:18px;line-height:1;padding:2px 4px">⠿</span>';
-    var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '><div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta">' + meta + '</div></div></div>' +
+    var pick = c.smart ? '<span style="width:13px"></span>' : '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '>';
+    var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + pick + '<div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta">' + meta + '</div></div></div>' +
       '<div class="catalog-actions"><button class="small" data-view="' + c.id + '">View</button>' + buttons + '</div></div>';
     if (indent) return row;
     return '<div data-group="' + c.id + '">' + row + members.map(function (m) { return rowHtml(m, true); }).join('') + '</div>';
@@ -232,6 +289,7 @@ const PAGE_JS = String.raw`(function () {
         } catch (e) { say('msgRules', e.message); }
       };
     };
+    wireSmart();
     el('saveRules').onclick = saveRules(false);
     el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
@@ -346,6 +404,20 @@ const PAGE_JS = String.raw`(function () {
   // Changes are applied in the page directly, so the dashboard doesn't have to reload everything.
   function wireRowButtons() {
     wireDrag();
+    document.querySelectorAll('[data-smart-refresh]').forEach(function (b) {
+      b.onclick = async function () {
+        b.disabled = true;
+        try { var r = await api('/api/smart/' + b.dataset.smartRefresh + '/refresh', { method: 'POST', body: {} }); await load(); say('msg', 'Smart row updated: ' + n(r.count) + ' titles.', true); }
+        catch (e) { say('msg', e.message); b.disabled = false; }
+      };
+    });
+    document.querySelectorAll('[data-smart-delete]').forEach(function (b) {
+      b.onclick = async function () {
+        var c = find(b.dataset.smartDelete);
+        if (!confirm('Delete the smart row “' + c.name + '”?')) return;
+        try { await api('/api/smart/' + c.id, { method: 'DELETE' }); await load(); } catch (e) { say('msg', e.message); }
+      };
+    });
     document.querySelectorAll('[data-view]').forEach(function (b) {
       b.onclick = function () { openViewer(find(b.dataset.view), 0, ''); };
     });
@@ -418,6 +490,7 @@ const PAGE_JS = String.raw`(function () {
     var r = await VODImport.run(S.data.library.kind, function (t) { show(t, true); }, fileText);
     var extra = await matchAfter(r, show);
     await load();
+    if (S.data.catalogs.some(function (c) { return c.smart; })) { await refreshSmartRows(show); await load(); }
     return 'Done: ' + n(r.total) + ' titles (' + n(r.added) + ' new, ' + n(r.changed) + ' updated, ' + n(r.removed) + ' removed).' + (r.skippedLive ? ' Skipped ' + n(r.skippedLive) + ' live channels.' : '') + extra;
   }
   function loginFields(kind, login) {

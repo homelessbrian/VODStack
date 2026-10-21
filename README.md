@@ -12,6 +12,7 @@ A VOD-only IPTV catalog manager for Nuvio. Imports Xtream Codes and M3U sources,
 - Refresh reconciles items into original groups and preserves catalog settings.
 - Automatic TMDB matching after each import (cleans provider titles like "EN - Dune (2021) [4K]", uses provider TMDB IDs when given). Matched titles are served under their IMDb IDs so Nuvio shows its normal metadata.
 - Addon search (only what the provider has), paged catalogs, and playable Xtream series episodes.
+- Smart rows: TMDB lists (trending, popular, top rated, genres) filtered to what the provider has, refreshed automatically.
 - TMDB v3 key validation, including metadata/artwork enrichment and stored match status.
 - Cloudflare Workers deployment with a Turso database (tables created automatically).
 

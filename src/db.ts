@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -218,6 +218,14 @@ const MIGRATIONS: Record<number, string[]> = {
     'ALTER TABLE libraries ADD COLUMN settings_json TEXT',
     // Titles in import order within a category, for "newest first" rows (one write per title).
     'CREATE INDEX IF NOT EXISTS vod_items_recent_idx ON vod_items(catalog_id)',
+  ],
+  3: [
+    // Smart rows: a TMDB list filtered to this library. Definition, cached title ids, refresh time.
+    'ALTER TABLE catalogs ADD COLUMN smart_json TEXT',
+    'ALTER TABLE catalogs ADD COLUMN smart_ids TEXT',
+    'ALTER TABLE catalogs ADD COLUMN smart_at INTEGER',
+    // Find titles by TMDB ID (only titles that have one are indexed).
+    'CREATE INDEX IF NOT EXISTS vod_items_tmdbid_idx ON vod_items(tmdb_id) WHERE tmdb_id IS NOT NULL',
   ],
 };
 

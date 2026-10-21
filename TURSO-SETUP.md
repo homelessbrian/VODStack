@@ -52,5 +52,10 @@ On the **Rows** page:
 - **Auto-hide**: words like `ARABIC, XXX` hide matching categories, including future ones. Optionally,
   new categories start hidden and get a **New** badge.
 
+- **Smart rows**: rows built from TMDB lists (Trending today/this week, Popular, Top rated, Now in
+  theaters, Airing now, or Popular in a genre), showing only titles your provider has, in TMDB's
+  order. They refresh themselves every few hours. **Add starter set** adds trending, popular and top
+  rated for movies and series in one click. Needs the TMDB key.
+
 Titles the provider removes are deleted automatically 90 days later (they come back with their
 TMDB match if the provider re-adds them before then).

@@ -22,6 +22,7 @@ import {
   type SourceConfig,
 } from './lib';
 import { displayTitle, norm } from './tmdb';
+import { refreshSmartRow } from './smart';
 
 const PAGE = 100;
 type ItemRow = {
@@ -178,15 +179,34 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     }
     const catalogId = Number(id.replace(/^vodstack_/, ''));
     const cat = await env.DB.prepare(
-      'SELECT c.id,c.is_merge,c.title_order,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
+      'SELECT c.id,c.is_merge,c.title_order,c.smart_json,c.smart_ids,c.smart_at,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
     )
       .bind(lib.owner_setup_id, catalogId, lib.id)
-      .first<{ id: number; is_merge: number; title_order: string; is_hidden: number | null }>();
+      .first<{ id: number; is_merge: number; title_order: string; smart_json: string | null; smart_ids: string | null; smart_at: number | null; is_hidden: number | null }>();
     if (!cat || cat.is_hidden) return json({ metas: [] });
     const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));
     // "Newest first" walks the (catalog_id) index backwards; A–Z walks (catalog_id, title).
     const recent = cat.title_order === 'recent';
     const ORDER = recent ? 'ORDER BY v.id DESC' : 'ORDER BY v.title';
+    if (cat.smart_json) {
+      // Smart row: TMDB's order, cached on the row (the cron keeps it fresh; first view fills it).
+      let ids: number[] = JSON.parse(cat.smart_ids || '[]');
+      if (!cat.smart_at)
+        try {
+          await refreshSmartRow(env, { id: cat.id, library_id: lib.id, smart_json: cat.smart_json }, lib.owner_setup_id);
+          const again = await env.DB.prepare('SELECT smart_ids FROM catalogs WHERE id=?').bind(cat.id).first<{ smart_ids: string }>();
+          ids = JSON.parse(again?.smart_ids || '[]');
+        } catch {}
+      const page = ids.slice(skip, skip + PAGE);
+      if (!page.length) return cached({ metas: [] }, 900);
+      const rows = (
+        await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1`)
+          .bind(JSON.stringify(page))
+          .all<ItemRow>()
+      ).results;
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      return cached({ metas: dedupe(page.map((i) => byId.get(i)).filter((r): r is ItemRow => !!r).map(metaPreview)) }, 900);
+    }
     if (cat.is_merge) {
       // Read the first skip+100 titles of each merged category (index order), then interleave them.
       const members = (

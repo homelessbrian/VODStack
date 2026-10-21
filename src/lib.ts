@@ -402,12 +402,13 @@ export type CatalogView = {
   mergedInto: number | null;
   createdAt: number | null;
   titleOrder: 'az' | 'recent';
+  smart: { list: string; type: MediaType; genre?: number; at: number | null } | null;
 };
 /** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */
 export async function catalogsFor(env: Env, setupId: string, libraryId: string): Promise<CatalogView[]> {
   const rows = (
     await env.DB.prepare(
-      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,p.display_name,p.is_hidden,p.sort_order AS psort
+      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,c.smart_json,c.smart_at,p.display_name,p.is_hidden,p.sort_order AS psort
        FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.library_id=?`,
     )
       .bind(setupId, libraryId)
@@ -427,6 +428,7 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       mergedInto: r.merged_into ?? null,
       createdAt: r.created_at ?? null,
       titleOrder: (r.title_order === 'recent' ? 'recent' : 'az') as 'az' | 'recent',
+      smart: r.smart_json ? { ...JSON.parse(r.smart_json), at: r.smart_at ?? null } : null,
     }))
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }
