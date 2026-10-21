@@ -260,7 +260,11 @@ async function proxyProvider(env: Env, setupId: string, sourceId: string, part: 
     try {
       snippet = hideSecrets((await r.text()).slice(0, 200).replace(/\s+/g, ' ').trim(), src.cfg);
     } catch {}
-    return json({ error: explainProviderStatus(r.status) + (snippet ? ` Provider said: "${snippet}"` : '') }, 502);
+    const cloudflareBlock = /error code: 1\d{3}/i.test(snippet);
+    const message = cloudflareBlock
+      ? `The provider's server is behind Cloudflare, and Cloudflare blocked this request (${snippet}). Requests from VODStack's server will keep being blocked, so import the playlist file from your own device instead: open your playlist URL in a new browser tab to download it, then choose that file with "Use a playlist file" (or "Refresh from file").`
+      : explainProviderStatus(r.status) + (snippet ? ` Provider said: "${snippet}"` : '');
+    return json({ error: message }, 502);
   }
   return new Response(r.body, {
     headers: {

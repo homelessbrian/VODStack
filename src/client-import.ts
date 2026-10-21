@@ -225,15 +225,18 @@ window.VODImport = (function () {
   }
 
   var running = false;
-  async function run(sourceId, kind, progress) {
+  // fileText: playlist contents the user picked from their own device. Used when the
+  // provider blocks requests coming from Cloudflare (e.g. "error code: 1106").
+  async function run(sourceId, kind, progress, fileText) {
     if (running) throw new Error('An import is already running. Wait for it to finish.');
     running = true;
     progress = progress || function () {};
     try {
       var data;
+      if (kind === 'xtream' && typeof fileText === 'string') throw new Error('Playlist files can only be used with M3U sources. Add this provider as an M3U playlist instead.');
       if (kind === 'xtream') data = await loadXtream(sourceId, progress);
       else {
-        var text = await providerText(sourceId, 'playlist', 'playlist', progress);
+        var text = typeof fileText === 'string' ? fileText : await providerText(sourceId, 'playlist', 'playlist', progress);
         progress('Reading playlist…');
         if (text.replace(/^﻿/, '').trim().indexOf('#EXTM3U') !== 0 && text.indexOf('#EXTINF') < 0) {
           var start = text.trim().slice(0, 140).replace(/\s+/g, ' ');
