@@ -41,7 +41,7 @@ window.VODImport = (function () {
     var r = await fetch(path, opts);
     var data = {};
     try { data = await r.json(); } catch (e) {}
-    if (!r.ok) throw new Error(data.error || ('Request failed (HTTP ' + r.status + ')'));
+    if (!r.ok) throw new Error(data.error || (r.status === 503 ? 'VODStack ran out of time on that step (HTTP 503). Try again; finished work is kept.' : 'Request failed (HTTP ' + r.status + ')'));
     return data;
   }
 
@@ -292,9 +292,17 @@ window.VODImport = (function () {
   // One-time fill-in for the language switches: the provider's labels, then TMDB's original language.
   async function fillLanguages(progress, needOriginal) {
     progress = progress || function () {};
-    var after = 0, checked = 0;
+    var after = 0, checked = 0, size = 500, tries = 0;
     for (;;) {
-      var r = await call('POST', '/api/library/detect-langs', { after: after });
+      var r;
+      try { r = await call('POST', '/api/library/detect-langs', { after: after, limit: size }); tries = 0; if (size < 500) size = Math.min(500, size * 2); }
+      catch (e) {
+        // A batch that runs out of time on Cloudflare's free plan fails with 503: retry it smaller.
+        if (!/HTTP 50[23]/.test(e.message) || ++tries > 6) throw e;
+        size = Math.max(50, Math.floor(size / 2));
+        await sleep(500);
+        continue;
+      }
       checked += r.checked;
       progress('Reading language labels… ' + checked.toLocaleString() + ' titles');
       if (r.next === null || r.next === undefined) break;
@@ -314,7 +322,12 @@ window.VODImport = (function () {
       async function worker() {
         for (var b = batches.shift(); b; b = batches.shift()) {
           if (pause) await sleep(pause);
-          var r = await call('POST', '/api/tmdb/langs', { ids: b });
+          var r;
+          try { r = await call('POST', '/api/tmdb/langs', { ids: b }); }
+          catch (e) {
+            if (!/HTTP 50[23]/.test(e.message) || ++limited > 40) throw e;
+            pause = 1500; batches.push(b); continue;
+          }
           done += r.checked;
           if (r.rateLimited) {
             if (++limited > 40) throw new Error('TMDB keeps rate-limiting this key. Try again in a few minutes.');

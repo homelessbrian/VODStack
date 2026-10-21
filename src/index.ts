@@ -9,7 +9,7 @@ import { dashboard } from './dashboard';
 import { handleAddon, type Ctx } from './addon';
 import { getDb } from './db';
 import { MATCH_BATCH, fillOriginalLanguages, matchBatch, searchTerms, sortKey, tmdbBase } from './tmdb';
-import { copyLanguage } from './lang';
+import { copyLanguage, copyLanguageCached } from './lang';
 import { CERTS, GENRES, LANGUAGES, SMART_LISTS, SORT_LABELS, buildSmartIds, refreshSmartRow, refreshStaleSmartRows, smartLabel, validSmartDef } from './smart';
 import {
   type Env,
@@ -326,17 +326,19 @@ async function route(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
     return json({ ok: true, hidden });
   }
   if (method === 'POST' && path === '/api/library/detect-langs') {
-    // Re-read the provider's language labels for titles already imported (2,000 per call).
+    // Re-read the provider's language labels for titles already imported. The page asks for small
+    // batches (and smaller still if one runs out of CPU time on the free plan).
     const lib = await ownedLibrary(env, setupId);
     const after = Math.max(0, Number(body.after) || 0);
+    const limit = Math.min(2000, Math.max(50, Number(body.limit) || 500));
     const rows = await env.DB.prepare(
       `SELECT v.id,v.title,c.source_category_name,v.copy_lang FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id
-       WHERE v.id>? AND v.library_id=? ORDER BY v.id LIMIT 2000`,
+       WHERE v.id>? AND v.library_id=? ORDER BY v.id LIMIT ?`,
     )
-      .bind(after, lib.id)
+      .bind(after, lib.id, limit)
       .raw<[number, string, string, string | null]>();
     const changes = rows
-      .map(([id, title, cat, old]) => ({ id, cl: copyLanguage(title, cat), old }))
+      .map(([id, title, cat, old]) => ({ id, cl: copyLanguageCached(title, cat), old }))
       .filter((r) => r.cl !== r.old)
       .map(({ id, cl }) => ({ id, cl }));
     if (changes.length)
@@ -345,7 +347,7 @@ async function route(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
       )
         .bind(lib.id, JSON.stringify(changes))
         .run();
-    return json({ ok: true, checked: rows.length, changed: changes.length, next: rows.length === 2000 ? rows[rows.length - 1][0] : null });
+    return json({ ok: true, checked: rows.length, changed: changes.length, next: rows.length === limit ? rows[rows.length - 1][0] : null });
   }
   if (method === 'GET' && path === '/api/tmdb/langs/pending') {
     // Matched titles whose original language isn't known yet (matched before this existed).

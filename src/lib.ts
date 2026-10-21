@@ -211,10 +211,10 @@ export function visibleFilter(lib: { settings_json: string | null; stats_json: s
 export async function backfillSortTitles(env: Env, libraryId: string, sortKey: (t: string) => string) {
   const lib = await env.DB.prepare('SELECT sort_ready,sort_cursor FROM libraries WHERE id=?').bind(libraryId).first<{ sort_ready: number; sort_cursor: number }>();
   if (!lib || lib.sort_ready) return { done: true, checked: 0 };
-  const rows = await env.DB.prepare('SELECT id,title FROM vod_items WHERE id>? AND library_id=? ORDER BY id LIMIT 2000')
+  const rows = await env.DB.prepare('SELECT id,title FROM vod_items WHERE id>? AND library_id=? ORDER BY id LIMIT 1000')
     .bind(lib.sort_cursor, libraryId)
     .raw<[number, string]>();
-  const done = rows.length < 2000;
+  const done = rows.length < 1000;
   const writes = [
     env.DB.prepare('UPDATE libraries SET sort_cursor=?,sort_ready=? WHERE id=?').bind(rows.length ? rows[rows.length - 1][0] : lib.sort_cursor, done ? 1 : 0, libraryId),
   ];

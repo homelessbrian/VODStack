@@ -997,7 +997,8 @@ const PAGE_JS = String.raw`(function () {
     el('saveRules').onclick = saveRules(false);
     el('applyRules').onclick = saveRules(true);
     // Changing what family sees: fill in any missing language info first, save, then rebuild smart rows.
-    var filterChanged = async function () {
+    var filterChanged = async function (ev) {
+      var changed = ev && ev.target;
       var boxes = ['onlyMatched', 'englishOriginal', 'englishCopy'].map(el);
       boxes.forEach(function (b) { b.disabled = true; });
       var show = function (t, ok) { say('msgFilters', t, ok); };
@@ -1012,7 +1013,8 @@ const PAGE_JS = String.raw`(function () {
         await load();
         say('msgFilters', 'Saved. Nuvio now gets ' + plural(S.data.catalogs.filter(function (c) { return !c.mergedInto; }).reduce(function (t, c) { return t + (c.isMerge || c.smart ? 0 : c.visibleCount); }, 0), 'title', 'titles') + '.', true);
       } catch (e) {
-        show(e.message);
+        show(e.message + ' The switch was set back; turn it on again to continue.');
+        if (changed) changed.checked = !changed.checked;
         boxes.forEach(function (b) { b.disabled = false; });
       }
     };

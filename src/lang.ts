@@ -84,7 +84,23 @@ function wordLangs(s: string) {
 export function copyLanguage(title: string, categoryName: string): string | null {
   const fromTitle = tagLangs(title);
   if (fromTitle.length) return fromTitle.includes('en') ? 'en' : fromTitle[0];
+  return categoryLanguage(categoryName);
+}
+function categoryLanguage(categoryName: string): string | null {
   const fromCat = [...tagLangs(categoryName, true), ...wordLangs(categoryName)];
   if (fromCat.length) return fromCat.includes('en') ? 'en' : fromCat[0];
   return null;
+}
+// Same answer as copyLanguage, but each category name is only examined once per batch of titles.
+const catCache = new Map<string, string | null>();
+export function copyLanguageCached(title: string, categoryName: string): string | null {
+  const fromTitle = tagLangs(title);
+  if (fromTitle.length) return fromTitle.includes('en') ? 'en' : fromTitle[0];
+  let v = catCache.get(categoryName);
+  if (v === undefined) {
+    if (catCache.size > 5000) catCache.clear();
+    v = categoryLanguage(categoryName);
+    catCache.set(categoryName, v);
+  }
+  return v;
 }
