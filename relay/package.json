@@ -1,0 +1,13 @@
+{
+  "name": "vodstack-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Downloads provider playlists for VODStack when the provider blocks Cloudflare Workers.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

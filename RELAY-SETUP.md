@@ -1,0 +1,51 @@
+# Relay setup (Render), browser only
+
+Some IPTV providers sit behind Cloudflare and block requests that come from Cloudflare
+Workers. VODStack then shows **"error code: 1106"**. The relay is a tiny service on
+[Render](https://render.com) that downloads the provider's playlist/API data for VODStack,
+so the provider sees an ordinary server instead of a Cloudflare Worker.
+
+- It only passes data through and stores nothing.
+- It only accepts requests that carry your secret `RELAY_KEY`.
+- Provider passwords are sent in the request body, never in the address, so they don't show
+  up in Render's logs.
+- Render's free tier puts the relay to sleep after 15 idle minutes. VODStack wakes it
+  automatically, so the first refresh after a break takes about a minute longer.
+
+## 1. Create the relay on Render
+
+1. Go to [render.com](https://render.com) and sign up with **GitHub**.
+2. Choose **New → Blueprint**.
+3. Connect GitHub if asked, give Render access to the **VODStack** repository, then select it.
+4. Render reads `render.yaml` and shows one service, **vodstack-relay** (Free plan). Click
+   **Deploy Blueprint** (or **Apply**).
+5. Wait until the service shows **Live**. This takes a minute or two.
+
+## 2. Copy the relay's address and key
+
+1. Open the **vodstack-relay** service.
+2. Copy its address at the top. It looks like `https://vodstack-relay-xxxx.onrender.com`.
+3. Open its **Environment** tab, reveal **RELAY_KEY**, and copy the value.
+
+Treat the key like a password.
+
+## 3. Give them to VODStack in Cloudflare
+
+1. In the Cloudflare dashboard open **Workers & Pages → vodstack → Settings → Variables and Secrets**.
+2. Click **Add**, set the type to **Secret**, name it `RELAY_URL`, and paste the Render address.
+3. Click **Add** again, set the type to **Secret**, name it `RELAY_KEY`, and paste the key.
+4. Click **Deploy** (or **Save**).
+
+Use the **Secret** type for both. Plain-text variables set in the dashboard can be wiped the
+next time the code is deployed from GitHub, but secrets are kept.
+
+## 4. Use it
+
+Reload VODStack (Ctrl+Shift+R). The Sources page now says downloads go through your relay.
+Press **Refresh** on a source. The plain button works again; you no longer need a file.
+
+If the provider blocks Render as well, VODStack will say so. In that case keep using
+**Refresh from file** for that provider.
+
+To stop using the relay, delete the two secrets in Cloudflare. To remove it completely,
+delete the **vodstack-relay** service in Render.

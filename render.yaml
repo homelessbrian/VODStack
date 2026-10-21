@@ -1,0 +1,15 @@
+# Render Blueprint for the VODStack relay (see relay/server.mjs and RELAY-SETUP.md).
+# Render reads this file when you choose New > Blueprint and pick this repository.
+services:
+  - type: web
+    name: vodstack-relay
+    runtime: node
+    plan: free
+    rootDir: relay
+    buildCommand: npm install --omit=dev
+    startCommand: node server.mjs
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: RELAY_KEY
+        generateValue: true

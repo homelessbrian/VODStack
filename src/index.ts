@@ -19,6 +19,9 @@ interface Env {
   DB: D1Database;
   ENCRYPTION_KEY: string;
   APP_NAME?: string;
+  /** Optional relay (relay/server.mjs on Render) for providers that block Cloudflare. Set both as Worker secrets. */
+  RELAY_URL?: string;
+  RELAY_KEY?: string;
 }
 type MediaType = 'movie' | 'series';
 type SourceKind = 'xtream' | 'm3u';
@@ -234,26 +237,62 @@ function explainProviderStatus(status: number) {
     return `The provider's server could not be reached through Cloudflare (HTTP ${status}). It may be down or blocking Cloudflare.`;
   return `The provider returned HTTP ${status}.`;
 }
+const relayBase = (env: Env) =>
+  env.RELAY_URL && env.RELAY_KEY ? env.RELAY_URL.trim().replace(/\/+$/, '') : null;
+/** Ping the relay. Render's free tier sleeps after 15 idle minutes and takes about a minute to wake. */
+async function wakeRelay(env: Env) {
+  const base = relayBase(env);
+  if (!base) return { configured: false, ready: false };
+  try {
+    const r = await fetch(base + '/health', { signal: AbortSignal.timeout(25000) });
+    const d = (await r.json().catch(() => null)) as { ok?: boolean } | null;
+    return { configured: true, ready: !!(r.ok && d?.ok) };
+  } catch {
+    return { configured: true, ready: false };
+  }
+}
 /** Fetch one list from the provider and stream it straight back to the browser (no parsing here). */
 async function proxyProvider(env: Env, setupId: string, sourceId: string, part: string) {
   const src = await getSource(env, setupId, sourceId);
   const target = providerUrl(src.kind, src.cfg, part);
+  const userAgent = src.cfg.userAgent || DEFAULT_USER_AGENT;
+  const relay = relayBase(env);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000); // time limit to *start* responding
+  const timer = setTimeout(() => controller.abort(), 75000); // time limit to *start* responding
   let r: Response;
   try {
-    r = await fetch(target.toString(), {
-      headers: { 'user-agent': src.cfg.userAgent || DEFAULT_USER_AGENT, accept: '*/*' },
-      redirect: 'follow',
-      signal: controller.signal,
-    });
+    r = relay
+      ? await fetch(relay + '/fetch', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-relay-key': env.RELAY_KEY! },
+          body: JSON.stringify({ url: target.toString(), userAgent }),
+          signal: controller.signal,
+        })
+      : await fetch(target.toString(), {
+          headers: { 'user-agent': userAgent, accept: '*/*' },
+          redirect: 'follow',
+          signal: controller.signal,
+        });
   } catch (e) {
     const why = controller.signal.aborted
-      ? 'it did not respond within 45 seconds'
+      ? 'it did not respond within 75 seconds'
       : hideSecrets(e instanceof Error ? e.message : String(e), src.cfg);
-    return json({ error: `Couldn't reach the provider: ${why}.` }, 502);
+    return json({ error: `Couldn't reach the ${relay ? 'relay' : 'provider'}: ${why}.` }, 502);
   } finally {
     clearTimeout(timer);
+  }
+  if (relay && !r.headers.get('x-upstream-status')) {
+    // The relay itself answered (bad key, asleep, crashed) rather than passing on the provider's reply.
+    const d = (await r.json().catch(() => null)) as { error?: string } | null;
+    const why = d?.error
+      ? hideSecrets(d.error, src.cfg)
+      : `HTTP ${r.status} — it may still be waking up; try again in a minute`;
+    return json(
+      {
+        error: `The relay couldn't download from the provider: ${why}${r.status === 401 ? ' Check that RELAY_KEY in Cloudflare matches the one in Render.' : ''}`,
+      },
+      502,
+    );
   }
   if (!r.ok) {
     let snippet = '';
@@ -262,7 +301,9 @@ async function proxyProvider(env: Env, setupId: string, sourceId: string, part: 
     } catch {}
     const cloudflareBlock = /error code: 1\d{3}/i.test(snippet);
     const message = cloudflareBlock
-      ? `The provider's server is behind Cloudflare, and Cloudflare blocked this request (${snippet}). Requests from VODStack's server will keep being blocked, so import the playlist file from your own device instead: open your playlist URL in a new browser tab to download it, then choose that file with "Use a playlist file" (or "Refresh from file").`
+      ? relay
+        ? `The provider's Cloudflare protection blocked the relay too (${snippet}). Use "Refresh from file" for this provider.`
+        : `The provider's server is behind Cloudflare, and Cloudflare blocked this request (${snippet}). Set up the relay (see RELAY-SETUP.md in the repo), or import the playlist file from your own device: open your playlist URL in a new browser tab to download it, then choose that file with "Use a playlist file" (or "Refresh from file").`
       : explainProviderStatus(r.status) + (snippet ? ` Provider said: "${snippet}"` : '');
     return json({ error: message }, 502);
   }
@@ -377,6 +418,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return json({
         catalogs: catalogs.results,
         sources: sources.results,
+        relayConfigured: !!relayBase(env),
         addonUrl: addonToken ? `${url.origin}/addon/${addonToken}/manifest.json` : null,
       });
     }
@@ -416,6 +458,7 @@ async function route(request: Request, env: Env): Promise<Response> {
           .run();
       return json({ ok: true, sourceId: id, kind });
     }
+    if (method === 'GET' && path === '/api/relay/wake') return json(await wakeRelay(env));
     const srcMatch = path.match(/^\/api\/sources\/([^/]+)\/(provider|index|import\/catalogs|import\/items|import\/remove|import\/finish)$/);
     if (srcMatch) {
       const [, sourceId, action] = srcMatch;

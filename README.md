@@ -13,6 +13,10 @@ A VOD-only IPTV catalog manager for Nuvio. Imports Xtream Codes and M3U sources,
 - TMDB v3 key validation and batch title matching (20 items per request), including metadata/artwork enrichment and stored match status.
 - Cloudflare Workers + D1 deployment configuration and migrations.
 
+## Providers that block Cloudflare
+
+If imports fail with "error code: 1106", the provider blocks Cloudflare Workers. Either set up the optional relay on Render ([`RELAY-SETUP.md`](./RELAY-SETUP.md), browser only) or use **Refresh from file** with a playlist downloaded in your browser.
+
 ## Deploy
 
 Follow [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) for Windows PowerShell instructions, including D1 setup, encryption secret creation, migrations, deployment and TMDB setup.

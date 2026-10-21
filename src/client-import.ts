@@ -224,6 +224,22 @@ window.VODImport = (function () {
     return { total: total, added: added, changed: changed, unchanged: unchanged, removed: gone.length, catalogs: data.catalogs.length, skippedLive: data.skippedLive, status: status };
   }
 
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // If a relay is set up, make sure it is awake before downloading (Render free tier sleeps).
+  async function wakeRelay(progress) {
+    var w = await call('GET', '/api/relay/wake');
+    if (!w.configured || w.ready) return;
+    var started = Date.now();
+    while (Date.now() - started < 180000) {
+      progress('Waking up the relay… (this can take about a minute after it has been idle)');
+      await sleep(4000);
+      w = await call('GET', '/api/relay/wake');
+      if (w.ready) return;
+    }
+    throw new Error('The relay did not wake up within 3 minutes. Check that the vodstack-relay service is running in Render.');
+  }
+
   var running = false;
   // fileText: playlist contents the user picked from their own device. Used when the
   // provider blocks requests coming from Cloudflare (e.g. "error code: 1106").
@@ -234,6 +250,7 @@ window.VODImport = (function () {
     try {
       var data;
       if (kind === 'xtream' && typeof fileText === 'string') throw new Error('Playlist files can only be used with M3U sources. Add this provider as an M3U playlist instead.');
+      if (typeof fileText !== 'string') await wakeRelay(progress);
       if (kind === 'xtream') data = await loadXtream(sourceId, progress);
       else {
         var text = typeof fileText === 'string' ? fileText : await providerText(sourceId, 'playlist', 'playlist', progress);
