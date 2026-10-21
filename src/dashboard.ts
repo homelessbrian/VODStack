@@ -45,19 +45,25 @@ const PAGE_JS = String.raw`(function () {
     topAction.innerHTML = '';
     var recover = '<div class="row" style="margin-top:6px"><input id="recoverCode" placeholder="VOD-XXXXXX-XXXXXX-XXXXXX-XXXXXX" autocomplete="off"><button id="recoverBtn" style="flex:0 0 auto">Recover</button></div>';
     if (invite) {
-      root.innerHTML = '<div class="panel"><div class="eyebrow">INVITE</div><h2 id="invTitle">Checking your invite…</h2><p id="invText"></p><div class="actions"><button class="primary" id="joinBtn" disabled>Join</button></div><div id="msg"></div><hr class="divider"><div class="help">Joined before on another device? Enter your recovery code:</div>' + recover + '</div>';
+      root.innerHTML = '<div class="panel"><div class="eyebrow">INVITE</div><h2 id="invTitle">Checking your invite…</h2><p id="invText"></p><form id="joinForm" style="display:none"><div class="formgrid" id="joinFields"></div><div class="actions"><button class="primary" id="joinBtn" type="submit">Get my Nuvio link</button></div></form><div id="msg"></div><hr class="divider"><div class="help">Already set up and want to change your login? Enter your recovery code:</div>' + recover + '</div>';
       api('/api/invite?code=' + encodeURIComponent(invite)).then(function (d) {
-        el('invTitle').textContent = 'Join ' + d.name;
-        el('invText').textContent = 'You were invited to this shared library. Next you will enter your own provider login, then add your personal link to Nuvio.';
-        el('joinBtn').disabled = false;
+        el('invTitle').textContent = 'Watch ' + d.name + ' in Nuvio';
+        el('invText').textContent = 'Enter the ' + (d.kind === 'xtream' ? 'Xtream Codes login' : 'M3U playlist link') + ' you got for ' + d.name + '. You’ll get your own personal link to add to Nuvio.';
+        el('joinFields').innerHTML = loginFields(d.kind);
+        el('joinForm').style.display = 'block';
       }).catch(function (e) { el('invTitle').textContent = 'This invite link isn’t valid'; say('msg', e.message); });
-      el('joinBtn').onclick = async function () {
+      el('joinForm').onsubmit = async function (e) {
+        e.preventDefault();
+        el('joinBtn').disabled = true;
+        say('msg', 'Checking your login…', true);
         try {
-          var d = await api('/api/join', { method: 'POST', body: { code: invite } });
+          var body = Object.fromEntries(new FormData(el('joinForm')).entries());
+          body.code = invite;
+          var d = await api('/api/join', { method: 'POST', body: body });
           history.replaceState(null, '', location.pathname);
-          invite = null; S.recovery = d.recoveryCode; S.tab = 'login';
-          await load();
-        } catch (e) { say('msg', e.message); }
+          invite = null;
+          joined(d);
+        } catch (err) { say('msg', err.message); el('joinBtn').disabled = false; }
       };
     } else {
       root.innerHTML = '<div class="notice">VODStack turns your IPTV provider’s movies and series into rows, search and playback inside Nuvio.</div><div class="panel"><div class="eyebrow">WELCOME</div><h2>Get started</h2><p>Use your recovery code to get back into your setup, or start a new one. Joining someone’s shared library? Open the invite link they sent you.</p>' + recover + '<div class="actions"><button id="newBtn">Start a new setup</button></div><div id="msg"></div></div>';
@@ -76,23 +82,59 @@ const PAGE_JS = String.raw`(function () {
     };
   }
 
+  function joined(d) {
+    topAction.innerHTML = '';
+    root.innerHTML = '<div class="panel"><div class="eyebrow">ALL SET</div><h2>Your Nuvio link</h2><p>In Nuvio, add this as an addon. It’s personal to you, so don’t share it.</p><div class="code" style="font-size:13px">' + esc(d.addonUrl) + '</div><div class="actions"><button class="primary" id="copyAddon">Copy</button></div>' +
+      '<hr class="divider"><h3>Your recovery code</h3><p>Keep this somewhere safe. You only need it if you ever want to come back and change your login.</p><div class="code">' + esc(d.recoveryCode) + '</div><div class="actions"><button id="copyRecovery">Copy</button><button id="doneBtn">Done</button></div></div>';
+    copyButton('copyAddon', d.addonUrl);
+    copyButton('copyRecovery', d.recoveryCode);
+    el('doneBtn').onclick = function () { load(); };
+  }
+
+  // ---------- family member: one simple page ----------
+  function memberPage() {
+    var d = S.data;
+    return '<div class="panel"><div class="eyebrow">' + esc(d.library.name) + '</div><h2>Your Nuvio link</h2><p>Add this to Nuvio as an addon. It’s personal to you, so don’t share it.</p>' +
+      (d.login ? '' : '<div class="notice">Save your login below first, or nothing will play.</div>') +
+      '<div class="code" style="font-size:13px">' + esc(d.addonUrl || '') + '</div><div class="actions"><button class="primary" id="copyAddon">Copy</button></div></div>' +
+      '<div class="panel"><h3>Your login</h3><p>Only used when you press play, so it’s your own account and connection limit.</p><form id="memberLogin"><div class="formgrid">' + loginFields(d.library.kind, d.login) + '</div><div class="actions"><button id="saveLogin" type="submit">Update login</button></div><div id="msg"></div></form></div>' +
+      '<div class="panel"><h3>Recovery code</h3><p>Your way back to this page from another device.</p><button id="rotate" class="danger">Make a new recovery code</button></div>';
+  }
+  function wireMember() {
+    copyButton('copyAddon', S.data.addonUrl || '');
+    el('memberLogin').onsubmit = async function (e) {
+      e.preventDefault();
+      el('saveLogin').disabled = true;
+      say('msg', 'Checking your login…', true);
+      try { await api('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(el('memberLogin')).entries()) }); await load(); say('msg', 'Login updated.', true); }
+      catch (err) { say('msg', err.message); el('saveLogin').disabled = false; }
+    };
+    el('rotate').onclick = async function () {
+      if (!confirm('Make a new recovery code? The current one will stop working.')) return;
+      try { var r = await api('/api/recovery-code/rotate', { method: 'POST', body: {} }); S.recovery = r.recoveryCode; render(); } catch (err) { alert(err.message); }
+    };
+  }
+
   // ---------- signed in ----------
   function render() {
     var d = S.data;
     topAction.innerHTML = '<button id="logout">Lock</button>';
     el('logout').onclick = async function () { await api('/api/logout', { method: 'POST', body: {} }); S.data = null; welcome(); };
+    if (d.role === 'member') {
+      root.innerHTML = (S.recovery ? '<div class="notice"><strong>Your new recovery code:</strong><div class="code">' + esc(S.recovery) + '</div></div>' : '') + memberPage();
+      wireMember();
+      return;
+    }
     var tabs = d.role === 'owner' ? [['rows', '▦ Rows'], ['library', '⇄ Library'], ['settings', '⚙ Settings']]
-      : d.role === 'member' ? [['rows', '▦ Rows'], ['login', '🔑 My login'], ['settings', '⚙ Settings']]
       : [['setup', '⇄ Set up provider'], ['settings', '⚙ Settings']];
     if (!tabs.some(function (t) { return t[0] === S.tab; })) S.tab = tabs[0][0];
-    if (d.role === 'member' && !d.login && S.tab === 'rows') S.tab = 'login';
     var banner = S.recovery ? '<div class="notice"><strong>Save your recovery code now.</strong> It’s the only way back into this setup from another device, and it’s shown only once.<div class="code">' + esc(S.recovery) + '</div><div class="actions"><button id="copyRecovery">Copy</button><button id="dismissRecovery">I saved it</button></div></div>' : '';
-    var page = S.tab === 'rows' ? rowsPage() : S.tab === 'library' ? libraryPage() : S.tab === 'login' ? loginPage() : S.tab === 'setup' ? setupPage() : settingsPage();
+    var page = S.tab === 'rows' ? rowsPage() : S.tab === 'library' ? libraryPage() : S.tab === 'setup' ? setupPage() : settingsPage();
     root.innerHTML = banner + '<div class="layout"><aside class="side">' + tabs.map(function (t) { return '<button class="nav ' + (S.tab === t[0] ? 'active' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('') +
       '<div class="side-note">' + (d.library ? esc(d.library.name) + '<br>' + (d.role === 'owner' ? 'You own this library' : 'Shared library') : 'No provider yet') + '</div></aside><section class="content">' + page + '</section></div>';
     document.querySelectorAll('[data-tab]').forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; });
     if (S.recovery) { copyButton('copyRecovery', S.recovery); el('dismissRecovery').onclick = function () { S.recovery = null; render(); }; }
-    ({ rows: wireRows, library: wireLibrary, login: wireLogin, setup: wireSetup, settings: wireSettings })[S.tab]();
+    ({ rows: wireRows, library: wireLibrary, setup: wireSetup, settings: wireSettings })[S.tab]();
   }
 
   // ---------- rows ----------
@@ -102,10 +144,10 @@ const PAGE_JS = String.raw`(function () {
   }
   function rowsPage() {
     var cats = S.data.catalogs;
-    if (!cats.length) return '<div class="panel"><div class="empty"><strong>No rows yet</strong>' + (S.data.role === 'owner' ? 'Import your provider on the Library page.' : 'The library owner hasn’t imported anything yet.') + '</div></div>';
+    if (!cats.length) return '<div class="panel"><div class="empty"><strong>No rows yet</strong>' + 'Import your provider on the Library page.' + '</div></div>';
     var shown = cats.filter(function (c) { return !c.hidden && c.item_count > 0; }).length;
     var titles = cats.reduce(function (t, c) { return t + c.item_count; }, 0);
-    return '<div class="page-head"><div><h2>Your rows</h2><div class="muted">These are the rows you’ll see in Nuvio. Changes here only affect you.</div></div></div>' +
+    return '<div class="page-head"><div><h2>Rows</h2><div class="muted">The rows everyone in your library sees in Nuvio. Only you can change them.</div></div></div>' +
       '<div class="cards"><div class="stat"><strong>' + n(cats.length) + '</strong><span>Categories</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
       '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' +
       '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:150px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select></div>' +
@@ -226,7 +268,7 @@ const PAGE_JS = String.raw`(function () {
       '<div class="cards"><div class="stat"><strong>' + n(st.total) + '</strong><span>Titles</span></div><div class="stat"><strong>' + n(st.withImdb) + '</strong><span>With full metadata</span></div><div class="stat"><strong>' + n(st.pending) + '</strong><span>Waiting for TMDB</span></div></div>' +
       '<div class="panel"><h3>Refresh</h3><p>Downloads the latest lists once and updates the library for everyone who joined. Only new or changed titles are saved.</p><div class="help">' + (lib.lastRefreshAt ? 'Last refresh: ' + esc(lib.lastRefreshAt) + ' UTC · ' : '') + esc(lib.status || 'Not imported yet') + '</div>' +
       '<div class="actions"><button class="primary" id="refreshBtn">Refresh now</button>' + (lib.kind === 'm3u' ? '<button id="fileRefreshBtn">Refresh from file</button><input type="file" id="refreshFile" style="display:none" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain">' : '') + '</div><div id="msg"></div></div>' +
-      '<div class="panel"><h3>Invite friends</h3><p>Send this link to people who use the same provider. They enter their own login and get their own Nuvio link; nothing is imported again.</p>' +
+      '<div class="panel"><h3>Invite friends</h3><p>Send this link to family on the same provider. They enter their own login on one page and get their own Nuvio link. They see your rows exactly as you set them up.</p>' +
       (d.inviteUrl ? '<div class="code" style="font-size:13px">' + esc(d.inviteUrl) + '</div><div class="actions"><button id="copyInvite">Copy</button><button id="newInvite">Make a new link</button></div><div class="help">Making a new link stops the old one from working. People who already joined keep working.</div>' : '<div class="actions"><button class="primary" id="newInvite">Create invite link</button></div>') + '<div id="msg3"></div></div>' +
       '<div class="panel"><h3>Your provider login</h3><p>Used for importing and for your own playback.</p><form id="loginForm"><input type="hidden" name="name" value="' + esc(lib.name) + '"><div class="formgrid">' + loginFields(lib.kind, d.login) + '</div><div class="actions"><button type="submit">Save login</button></div><div id="msg4"></div></form>' +
       '<hr class="divider"><label>User-Agent</label><div class="row"><input id="ua" placeholder="Default (VLC)" value="' + esc(d.login ? d.login.userAgent : '') + '"><button id="saveUa" style="flex:0 0 auto">Save</button></div></div>' +
@@ -269,25 +311,6 @@ const PAGE_JS = String.raw`(function () {
     };
   }
 
-  // ---------- member login ----------
-  function loginPage() {
-    var d = S.data;
-    return '<div class="page-head"><div><h2>My login</h2><div class="muted">Your own ' + esc(d.library.name) + ' login. It’s used only when you press play, so your account and connection limit are your own.</div></div></div>' +
-      (d.login ? '<div class="notice">✓ Your login is saved. Next: copy your Nuvio link from Settings.</div>' : '<div class="notice">Enter the login you got from your provider.</div>') +
-      '<div class="panel"><form id="memberLogin"><div class="formgrid">' + loginFields(d.library.kind, d.login) + '<div class="wide">' + field('User-Agent (optional)', 'userAgent', 'text', 'Leave blank for the default', d.login ? d.login.userAgent : '') + '</div></div><div class="actions"><button class="primary" id="saveLogin" type="submit">Save login</button></div><div id="msg"></div></form></div>';
-  }
-  function wireLogin() {
-    el('memberLogin').onsubmit = async function (e) {
-      e.preventDefault();
-      el('saveLogin').disabled = true;
-      say('msg', 'Checking your login…', true);
-      try {
-        await api('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(el('memberLogin')).entries()) });
-        await load(); S.tab = 'settings'; render(); say('msg2', 'Login saved. Now add this link to Nuvio.', true);
-      } catch (err) { say('msg', err.message); el('saveLogin').disabled = false; }
-    };
-  }
-
   // ---------- settings ----------
   function tmdbText(d) {
     if (!d.configured) return 'No TMDB key saved yet.';
@@ -297,7 +320,6 @@ const PAGE_JS = String.raw`(function () {
     var d = S.data;
     return '<div class="page-head"><div><h2>Settings</h2></div></div>' +
       '<div class="panel"><h3>Your Nuvio link</h3><p>In Nuvio, add this as an addon. It gives you the rows, search and playback. It’s personal: treat it like a password.</p>' +
-      (d.role === 'member' && !d.login ? '<div class="notice">Save your login on the My login page first, or nothing will play.</div>' : '') +
       '<div class="code" style="font-size:13px">' + esc(d.addonUrl || '') + '</div><div class="actions"><button id="copyAddon">Copy</button></div><div class="help">After VODStack gets new features, remove the addon in Nuvio and add it again.</div><div id="msg2"></div></div>' +
       (d.role === 'owner' ? '<div class="panel"><h3>TMDB matching</h3><p>Links titles to their real TMDB/IMDb entries so Nuvio shows its normal posters, cast and descriptions. Runs automatically after each refresh, and matches are shared with everyone in the library.</p><form id="tmdbForm"><label>TMDB API key (v3)</label><input id="tmdbKey" type="password" placeholder="' + (d.tmdbConfigured ? 'Saved (paste a new key to replace it)' : 'Paste your TMDB v3 API key') + '" autocomplete="new-password"><div class="actions"><button class="primary" type="submit">Save key</button><button type="button" id="runMatch">Match titles now</button><button type="button" id="retryMatch">Retry not-found titles</button></div><div class="help" id="tmdbStatus">…</div><div id="tmdbMsg"></div></form><div class="help" style="margin-top:8px">Get a free key at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API settings</a>.</div></div>' : '') +
       '<div class="panel"><h3>Recovery code</h3><p>Your way back into this setup from another device. Making a new one stops the old one working.</p><button id="rotate" class="danger">Make a new recovery code</button><div id="newCode"></div></div>';

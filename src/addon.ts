@@ -1,6 +1,7 @@
 // Stremio-style addon that Nuvio installs from the manifest URL.
 //
-// - The titles come from the viewer's shared library; stream links use the viewer's own login.
+// - The titles and row layout come from the shared library (arranged by its owner); stream links
+//   use the viewer's own login.
 // - Titles matched to IMDb use their real ID (tt…), so Nuvio shows its normal metadata for them.
 // - Unmatched titles use "vodstack:<n>" IDs with the provider's own name/poster.
 // - Search only returns what the provider has. Series episodes come from get_series_info.
@@ -121,7 +122,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
 
   if (m[2] === 'manifest.json') {
     // Hidden and empty categories are left out, so Nuvio doesn't request rows nobody sees.
-    const cats = lib ? (await catalogsFor(env, setupId, lib.id)).filter((c) => !c.hidden && c.item_count > 0) : [];
+    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && c.item_count > 0) : [];
     return cached(
       {
         id: 'com.vodstack.addon',
@@ -160,10 +161,10 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
           .bind(prefix + q, prefix + q + '~', lib.id, type)
           .all<ItemRow>()
       ).results;
-      // Leave out categories this person hid (a tiny read: only their own changed rows).
+      // Leave out categories the library owner hid (a tiny read: only the owner's changed rows).
       const hidden = new Set(
         (
-          await env.DB.prepare('SELECT catalog_id FROM catalog_prefs WHERE setup_id=? AND is_hidden=1').bind(setupId).raw<[number]>()
+          await env.DB.prepare('SELECT catalog_id FROM catalog_prefs WHERE setup_id=? AND is_hidden=1').bind(lib.owner_setup_id).raw<[number]>()
         ).map((r) => r[0]),
       );
       const rank = (x: ItemRow) => {
@@ -177,7 +178,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     const cat = await env.DB.prepare(
       'SELECT c.id,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
     )
-      .bind(setupId, catalogId, lib.id)
+      .bind(lib.owner_setup_id, catalogId, lib.id)
       .first<{ id: number; is_hidden: number | null }>();
     if (!cat || cat.is_hidden) return json({ metas: [] });
     const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));

@@ -66,7 +66,7 @@ async function createSetup(env: Env, libraryId: string | null) {
   )
     .bind(id, await sha(recoveryCode), await sha(addonToken), await encrypt(env, { token: addonToken }), libraryId)
     .run();
-  return { id, recoveryCode };
+  return { id, recoveryCode, addonToken };
 }
 
 /** Validate a login form. Xtream logins are checked with one request to the provider. */
@@ -144,12 +144,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     return lib ? json({ ok: true, name: lib.name, kind: lib.kind }) : json({ error: 'This invite link is no longer valid. Ask for a new one.' }, 404);
   }
   if (method === 'POST' && path === '/api/join') {
-    const lib = await env.DB.prepare('SELECT id FROM libraries WHERE invite_hash=?')
+    // Family members join in one step: invite code + their own login. Returns their Nuvio link.
+    const lib = await env.DB.prepare('SELECT id,kind FROM libraries WHERE invite_hash=?')
       .bind(await sha(str(body.code, 200)))
-      .first<{ id: string }>();
+      .first<{ id: string; kind: SourceKind }>();
     if (!lib) return json({ error: 'This invite link is no longer valid. Ask for a new one.' }, 404);
+    const cfg = await readLogin(env, lib.kind, body, lib.kind === 'xtream'); // checked before anything is saved
     const s = await createSetup(env, lib.id);
-    return newSession(env, s.id, { ok: true, recoveryCode: s.recoveryCode });
+    await saveLogin(env, s.id, lib.id, cfg);
+    return newSession(env, s.id, { ok: true, recoveryCode: s.recoveryCode, addonUrl: `${url.origin}/addon/${s.addonToken}/manifest.json` });
   }
   if (method === 'POST' && path === '/api/recover') {
     const code = str(body.code, 100).toUpperCase();
@@ -176,7 +179,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     const [login, catalogs, tmdbKey] = lib
       ? await Promise.all([
           getLogin(env, setupId, lib.id),
-          catalogsFor(env, setupId, lib.id),
+          // Only the owner arranges rows; family members just need their login and Nuvio link.
+          lib.isOwner ? catalogsFor(env, setupId, lib.id) : [],
           lib.isOwner
             ? env.DB.prepare('SELECT 1 AS k FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').first()
             : null,
@@ -419,7 +423,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   // ---- everyone: their own rows ----
   const catalogMatch = path.match(/^\/api\/catalogs\/(\d+)$/);
   if (method === 'PATCH' && catalogMatch) {
-    const lib = await getLibrary(env, setupId);
+    const lib = await ownedLibrary(env, setupId);
     const cat = lib
       ? await env.DB.prepare('SELECT id FROM catalogs WHERE id=? AND library_id=?').bind(Number(catalogMatch[1]), lib.id).first()
       : null;
@@ -439,8 +443,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (method === 'POST' && path === '/api/catalogs/bulk') {
     // Show or hide many rows at once (one statement).
-    const lib = await getLibrary(env, setupId);
-    if (!lib) return json({ error: 'No library yet.' }, 400);
+    const lib = await ownedLibrary(env, setupId);
     const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n)).slice(0, 2000);
     if (!ids.length || typeof body.is_hidden !== 'boolean') return json({ error: 'Send ids and is_hidden.' }, 400);
     await env.DB.prepare(
@@ -454,8 +457,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (method === 'POST' && path === '/api/catalog-order') {
     // Reuse the current order values in the new sequence, so moving one row writes only the rows that moved.
-    const lib = await getLibrary(env, setupId);
-    if (!lib) return json({ error: 'No library yet.' }, 400);
+    const lib = await ownedLibrary(env, setupId);
     const current = await catalogsFor(env, setupId, lib.id);
     const ids: unknown[] = Array.isArray(body.ids) ? body.ids : [];
     const byId = new Map(current.map((c) => [c.id, c]));

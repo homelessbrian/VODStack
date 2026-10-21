@@ -32,10 +32,11 @@ Use the **Secret** type for both. They don't belong in `wrangler.toml`, and secr
 Open VODStack, choose **Start a new setup**, save the recovery code, and set up your provider.
 The import and TMDB matching run in your browser tab; keep it open until they finish.
 
-## Sharing with friends
+## Sharing with family
 
 The person who sets up the provider owns the **library**. It is imported, refreshed and matched
-with TMDB **once** and shared. On the Library page, create an invite link and send it to friends
-on the same provider. They open it, enter **their own** login, and copy **their own** Nuvio link
-from Settings. Their playback uses their own account. Rows they rename, hide or reorder only change
-for them.
+with TMDB **once**, and shared. The owner also decides the rows (names, order, hidden).
+
+On the Library page, create an invite link and send it to family on the same provider. They open
+it, enter **their own** Xtream login or M3U link, and get **their own** Nuvio link on the same page.
+Their playback uses their own account. They see the rows exactly as the owner set them up.

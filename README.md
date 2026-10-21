@@ -21,7 +21,7 @@ If imports fail with "error code: 1106", the provider blocks Cloudflare Workers.
 
 ## Shared libraries
 
-One person (the owner) imports a provider once; friends on the same provider join with an invite link and enter only their own login. Titles, categories and TMDB matches are stored once and shared, and stream links use each viewer's own login. Everyone can rename, hide and reorder rows for themselves.
+One person (the owner) imports a provider once and arranges the rows. Family on the same provider open an invite link, enter only their own login, and get their personal Nuvio link on one page. Titles, categories, row layout and TMDB matches are stored once and shared; stream links use each viewer's own login.
 
 ## Database
 
