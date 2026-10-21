@@ -27,6 +27,8 @@ import {
   getLibrary,
   librarySettings,
   matchesHideRule,
+  TITLE_ORDERS,
+  resetShuffles,
   HIDE_VALUES,
   backfillSortTitles,
   recountCatalogs,
@@ -309,6 +311,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       hidden = ids.length;
     }
     await recountCatalogs(env, lib.id);
+    await resetShuffles(env, lib.id);
     return json({ ok: true, hidden });
   }
   if (method === 'POST' && path === '/api/library/detect-langs') {
@@ -531,6 +534,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     await libraryStats(env, lib.id);
     await recountCatalogs(env, lib.id);
     const purged = await purgeRemoved(env, lib.id);
+    await resetShuffles(env, lib.id);
     await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
       .bind((str(body.status, 180) || 'OK') + (purged ? ` · ${purged} long-gone titles cleaned up` : ''), lib.id)
       .run();
@@ -545,8 +549,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       ? await env.DB.prepare('SELECT id FROM catalogs WHERE id=? AND library_id=?').bind(Number(catalogMatch[1]), lib.id).first()
       : null;
     if (!cat) return json({ error: 'Catalog not found.' }, 404);
-    if (body.title_order === 'az' || body.title_order === 'recent') {
-      await env.DB.prepare('UPDATE catalogs SET title_order=? WHERE id=? AND library_id=?').bind(body.title_order, Number(catalogMatch[1]), lib.id).run();
+    if (TITLE_ORDERS.includes(body.title_order)) {
+      await env.DB.prepare('UPDATE catalogs SET title_order=?,shuffle_at=NULL WHERE id=? AND library_id=?').bind(body.title_order, Number(catalogMatch[1]), lib.id).run();
       return json({ ok: true });
     }
     const name = typeof body.display_name === 'string' ? body.display_name.trim().slice(0, 150) : undefined;
@@ -770,9 +774,18 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json({ ok: true });
   }
   if (method === 'POST' && path === '/api/catalogs/bulk') {
-    // Show or hide many rows at once (one statement).
+    // Show or hide many rows at once, or set their title order (one statement).
     const lib = await ownedLibrary(env, setupId);
     const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n)).slice(0, 2000);
+    if (TITLE_ORDERS.includes(body.title_order)) {
+      if (!ids.length) return json({ error: 'No rows.' }, 400);
+      await env.DB.prepare(
+        'UPDATE catalogs SET title_order=?1,shuffle_at=NULL WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?3 AND smart_json IS NULL',
+      )
+        .bind(body.title_order, JSON.stringify(ids), lib.id)
+        .run();
+      return json({ ok: true });
+    }
     const mode = typeof body.hide === 'string' && body.hide in HIDE_VALUES ? HIDE_VALUES[body.hide] : typeof body.is_hidden === 'boolean' ? (body.is_hidden ? 1 : 0) : null;
     if (!ids.length || mode === null) return json({ error: 'Send ids and hide (none, row or all).' }, 400);
     await env.DB.prepare(

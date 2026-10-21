@@ -56,7 +56,8 @@ On the **Rows** page:
 - **Rename** edits the name right in the row (Enter saves, Esc cancels). Drag the **⠿** handle (or use
   ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
 - **View** a row to see its titles, with posters and whether TMDB matched them.
-- **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.
+- Each row's order menu: **A–Z**, **Newest first**, or **Shuffle** (a new random order every 4 hours, the
+  same for everyone within those 4 hours). **Title order of all listed…** sets it for many rows at once.
 - **Merge**: tick categories and press **Merge selected**. The merged row always shows everything in its
   categories, so new titles from the provider appear in it automatically. **Unmerge** splits it back.
   Ticks stay while you change the filter; **Add selected to…** puts everything ticked into an existing

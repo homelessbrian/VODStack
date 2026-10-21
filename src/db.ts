@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -246,6 +246,11 @@ const MIGRATIONS: Record<number, string[]> = {
     'CREATE INDEX IF NOT EXISTS vod_items_sort_idx ON vod_items(catalog_id, sort_title)',
     'ALTER TABLE libraries ADD COLUMN sort_ready INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE libraries ADD COLUMN sort_cursor INTEGER NOT NULL DEFAULT 0',
+  ],
+  7: [
+    // Shuffled rows: the shuffled title ids for the current 4-hour window, and which window that is.
+    'ALTER TABLE catalogs ADD COLUMN shuffle_ids TEXT',
+    'ALTER TABLE catalogs ADD COLUMN shuffle_at INTEGER',
   ],
 };
 

@@ -12,6 +12,7 @@ import {
   catalogsFor,
   visibleFilter,
   NOT_HIDDEN_EVERYWHERE,
+  shuffleWindow,
   getLibrary,
   getLogin,
   json,
@@ -188,10 +189,20 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     }
     const catalogId = Number(id.replace(/^vodstack_/, ''));
     const cat = await env.DB.prepare(
-      'SELECT c.id,c.is_merge,c.title_order,c.smart_json,c.smart_ids,c.smart_at,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
+      'SELECT c.id,c.is_merge,c.title_order,c.smart_json,c.smart_ids,c.smart_at,c.shuffle_ids,c.shuffle_at,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
     )
       .bind(lib.owner_setup_id, catalogId, lib.id)
-      .first<{ id: number; is_merge: number; title_order: string; smart_json: string | null; smart_ids: string | null; smart_at: number | null; is_hidden: number | null }>();
+      .first<{
+        id: number;
+        is_merge: number;
+        title_order: string;
+        smart_json: string | null;
+        smart_ids: string | null;
+        smart_at: number | null;
+        shuffle_ids: string | null;
+        shuffle_at: number | null;
+        is_hidden: number | null;
+      }>();
     if (!cat || cat.is_hidden) return json({ metas: [] });
     const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));
     // "Newest first" walks the (catalog_id) index backwards; A–Z walks (catalog_id, title).
@@ -214,6 +225,48 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
           `SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META} AND ${NOT_HIDDEN_EVERYWHERE}`,
         )
           .bind(JSON.stringify(page), lib.owner_setup_id, lib.id)
+          .all<ItemRow>()
+      ).results;
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      return cached({ metas: dedupe(page.map((i) => byId.get(i)).filter((r): r is ItemRow => !!r).map(metaPreview)) }, 900);
+    }
+    if (cat.title_order === 'shuffle') {
+      // A random order that changes every 4 hours. Worked out once per window (reads the row's titles
+      // once), stored on the row, then each page reads only its 100 titles.
+      const win = shuffleWindow();
+      let ids: number[] | null = cat.shuffle_at === win && cat.shuffle_ids ? JSON.parse(cat.shuffle_ids) : null;
+      if (!ids) {
+        const cats = cat.is_merge
+          ? (await env.DB.prepare('SELECT id FROM catalogs WHERE merged_into=? AND library_id=?').bind(catalogId, lib.id).raw<[number]>()).map((r) => r[0])
+          : [catalogId];
+        const rows = await env.DB.prepare(
+          `SELECT v.id,v.imdb_id FROM vod_items v WHERE v.catalog_id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META} ORDER BY v.id`,
+        )
+          .bind(JSON.stringify(cats))
+          .raw<[number, string | null]>();
+        // One entry per title, even if it's in several merged categories.
+        const seen = new Set<string>();
+        ids = rows.filter(([id, imdb]) => (imdb ? (seen.has(imdb) ? false : (seen.add(imdb), true)) : true)).map(([id]) => id);
+        // Same shuffle for everyone in this window (seeded), so pages line up.
+        let seed = (win * 2654435761 + catalogId * 40503) >>> 0;
+        const rand = () => {
+          seed = (seed + 0x6d2b79f5) >>> 0;
+          let t = seed;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+        for (let i = ids.length - 1; i > 0; i--) {
+          const j = Math.floor(rand() * (i + 1));
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+        }
+        await env.DB.prepare('UPDATE catalogs SET shuffle_ids=?,shuffle_at=? WHERE id=?').bind(JSON.stringify(ids), win, catalogId).run();
+      }
+      const page = ids.slice(skip, skip + PAGE);
+      if (!page.length) return cached({ metas: [] }, 900);
+      const rows = (
+        await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META}`)
+          .bind(JSON.stringify(page))
           .all<ItemRow>()
       ).results;
       const byId = new Map(rows.map((r) => [r.id, r]));

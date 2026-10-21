@@ -189,7 +189,7 @@ const PAGE_JS = String.raw`(function () {
       '<div class="cards"><div class="stat"><strong>' + n(cats.filter(function (c) { return !c.mergedInto; }).length) + '</strong><span>Rows</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
       '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + smartPanel() + rulesPanel() +
       '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="smart">Smart</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
-      '<div class="actions"><select id="bulkHide" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Visibility of all listed…</option><option value="none">Show all</option><option value="row">Hide rows only (keep in search)</option><option value="all">Hide everywhere</option></select><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="pickBar"></div><div id="mergeForm"></div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
+      '<div class="actions"><select id="bulkHide" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Visibility of all listed…</option><option value="none">Show all</option><option value="row">Hide rows only (keep in search)</option><option value="all">Hide everywhere</option></select><select id="bulkOrder" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Title order of all listed…</option><option value="az">A–Z</option><option value="recent">Newest first</option><option value="shuffle">Shuffle every 4 h</option></select><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="pickBar"></div><div id="mergeForm"></div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
   }
   var STARTER = [['trending_day', 'movie'], ['trending_day', 'series'], ['popular', 'movie'], ['popular', 'series'], ['top_rated', 'movie'], ['top_rated', 'series']];
   function smartPanel() {
@@ -336,6 +336,7 @@ const PAGE_JS = String.raw`(function () {
       '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="hideNew" style="width:auto"' + (st.hideNew ? ' checked' : '') + '> New categories from the provider start hidden (they get a “New” badge so you can review them)</label>' +
       '<div class="actions"><button class="small" id="saveRules">Save</button><button class="small primary" id="applyRules">Save and hide matching now</button></div><div id="msgRules"></div></div>';
   }
+  var ORDERS = [['az', 'A–Z'], ['recent', 'Newest first'], ['shuffle', 'Shuffle (new order every 4 h)']];
   function rowHtml(c, indent) {
     var cats = S.data.catalogs;
     var parent = c.mergedInto ? find(c.mergedInto) : null;
@@ -351,7 +352,7 @@ const PAGE_JS = String.raw`(function () {
         [['none', 'Shown'], ['row', 'Hide row'], ['all', 'Hide everywhere']].map(function (o) { return '<option value="' + o[0] + '"' + (c.hideMode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
         (c.isMerge ? '<button class="small" data-unmerge="' + c.id + '">Unmerge</button>' : '') +
         (c.smart ? (c.smart.list === 'custom' ? '<button class="small" data-smart-edit="' + c.id + '">Edit</button>' : '') + '<button class="small" data-smart-refresh="' + c.id + '">Refresh</button><button class="small danger" data-smart-delete="' + c.id + '">Delete</button>'
-          : '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>') +
+          : '<select data-order="' + c.id + '" title="How titles are ordered in this row" style="width:auto;padding:7px 9px;font-size:12px">' + ORDERS.map(function (o) { return '<option value="' + o[0] + '"' + (c.titleOrder === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>') +
         '<button class="small" data-move="' + c.id + '" data-dir="top" title="Move to top">⤒</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button><button class="small" data-move="' + c.id + '" data-dir="bottom" title="Move to bottom">⤓</button>';
     var grip = indent ? '' : '<span data-drag="' + c.id + '" title="Drag to reorder" style="cursor:grab;touch-action:none;user-select:none;color:var(--muted);font-size:18px;line-height:1;padding:2px 4px">⠿</span>';
     var pick = c.smart ? '<span style="width:13px"></span>' : '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '>';
@@ -432,6 +433,17 @@ const PAGE_JS = String.raw`(function () {
     ['onlyMatched', 'englishOriginal', 'englishCopy'].forEach(function (id) { el(id).onchange = filterChanged; });
     el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    el('bulkOrder').onchange = async function () {
+      var order = el('bulkOrder').value;
+      if (!order) return;
+      var list = visibleRows().filter(function (c) { return !c.mergedInto && !c.smart; });
+      try {
+        await api('/api/catalogs/bulk', { method: 'POST', body: { ids: list.map(function (c) { return c.id; }), title_order: order } });
+        list.forEach(function (c) { c.titleOrder = order; });
+        render();
+        say('msg', n(list.length) + ' rows set to ' + (order === 'shuffle' ? 'shuffle every 4 hours' : order === 'recent' ? 'newest first' : 'A–Z') + '.', true);
+      } catch (e) { say('msg', e.message); el('bulkOrder').value = ''; }
+    };
     el('bulkHide').onchange = async function () {
       var mode = el('bulkHide').value;
       if (!mode) return;
@@ -610,11 +622,10 @@ const PAGE_JS = String.raw`(function () {
       b.onchange = function () { S.picked = S.picked || {}; S.picked[b.dataset.pick] = b.checked; renderPickBar(); };
     });
     document.querySelectorAll('[data-order]').forEach(function (b) {
-      b.onclick = async function () {
+      b.onchange = async function () {
         var c = find(b.dataset.order);
-        var next = c.titleOrder === 'recent' ? 'az' : 'recent';
-        try { await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { title_order: next } }); c.titleOrder = next; el('rowList').innerHTML = rowList(); wireRowButtons(); }
-        catch (e) { say('msg', e.message); }
+        try { await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { title_order: b.value } }); c.titleOrder = b.value; }
+        catch (e) { say('msg', e.message); b.value = c.titleOrder; }
       };
     });
     document.querySelectorAll('[data-unmerge]').forEach(function (b) {

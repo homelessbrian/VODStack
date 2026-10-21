@@ -238,6 +238,16 @@ export const HIDE_VALUES: Record<string, number> = { none: 0, all: 1, row: 2 };
  */
 export const NOT_HIDDEN_EVERYWHERE = `v.catalog_id NOT IN (SELECT hc.id FROM catalogs hc JOIN catalog_prefs hp
   ON hp.catalog_id=COALESCE(hc.merged_into,hc.id) AND hp.setup_id=? AND hp.is_hidden=1 WHERE hc.library_id=?)`;
+export const TITLE_ORDERS = ['az', 'recent', 'shuffle'];
+/** Shuffled rows get a new order every 4 hours. */
+export const SHUFFLE_SECONDS = 4 * 3600;
+export const shuffleWindow = () => Math.floor(Date.now() / 1000 / SHUFFLE_SECONDS);
+/** Make shuffled rows rebuild on their next view (after imports or filter changes). */
+export function resetShuffles(env: Env, libraryId: string) {
+  return env.DB.prepare("UPDATE catalogs SET shuffle_at=NULL WHERE library_id=? AND title_order='shuffle' AND shuffle_at IS NOT NULL")
+    .bind(libraryId)
+    .run();
+}
 /** Recount titles per row (all, with metadata, and visible in Nuvio). Reads the library once; writes only changed rows. */
 export async function recountCatalogs(env: Env, libraryId: string) {
   const lib = await env.DB.prepare('SELECT settings_json,stats_json FROM libraries WHERE id=?')
@@ -500,7 +510,7 @@ export type CatalogView = {
   isMerge: boolean;
   mergedInto: number | null;
   createdAt: number | null;
-  titleOrder: 'az' | 'recent';
+  titleOrder: 'az' | 'recent' | 'shuffle';
   smart: { list: string; type: MediaType; genre?: number; custom?: Record<string, unknown>; at: number | null } | null;
   matchedCount: number;
   visibleCount: number;
@@ -529,7 +539,7 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       isMerge: !!r.is_merge,
       mergedInto: r.merged_into ?? null,
       createdAt: r.created_at ?? null,
-      titleOrder: (r.title_order === 'recent' ? 'recent' : 'az') as 'az' | 'recent',
+      titleOrder: (['recent', 'shuffle'].includes(r.title_order) ? r.title_order : 'az') as 'az' | 'recent' | 'shuffle',
       smart: r.smart_json ? { ...JSON.parse(r.smart_json), at: r.smart_at ?? null } : null,
       matchedCount: r.smart_json ? r.item_count : r.matched_count,
       visibleCount: r.smart_json ? r.item_count : r.visible_count,
