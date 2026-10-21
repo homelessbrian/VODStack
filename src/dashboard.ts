@@ -357,13 +357,12 @@ const PAGE_JS = String.raw`(function () {
     var pick = c.smart ? '<span style="width:13px"></span>' : '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '>';
     var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + pick + '<div style="flex:1;min-width:0">' + (S.renaming === c.id
         ? '<div class="row" style="gap:6px"><input id="renameBox" value="' + esc(c.renamed || c.smart || c.isMerge ? c.name : '') + '" placeholder="' + esc(c.source_category_name) + '" maxlength="150"><button class="small primary" id="renameSave" style="flex:0 0 auto">Save</button><button class="small" id="renameCancel" style="flex:0 0 auto">Cancel</button></div><div class="help">' + (c.smart || c.isMerge ? 'Enter a name for this row.' : 'Leave empty to use the provider’s name.') + ' Enter saves, Esc cancels.</div>'
-        : '<div class="catalog-title">' + esc(c.name) + '</div>') + '<div class="meta">' + meta + '</div></div></div>' +
+        : '<div class="catalog-title">' + (members.length ? '<button data-expand="' + c.id + '" title="' + (S.open && S.open[c.id] ? 'Collapse' : 'Show the categories in this row') + '" style="background:transparent;border:0;padding:0 6px 0 0;color:var(--accent);font-size:14px;cursor:pointer">' + (S.open && S.open[c.id] ? '▾' : '▸') + '</button>' : '') + esc(c.name) + '</div>') + '<div class="meta">' + meta + (members.length ? ' · ' + members.length + ' categories' : '') + '</div></div></div>' +
       '<div class="catalog-actions"><button class="small" data-view="' + c.id + '">View</button>' + buttons + '</div></div>';
     if (indent) return row;
     if (!members.length) return '<div data-group="' + c.id + '">' + row + '</div>';
     var open = S.open && S.open[c.id];
-    var toggle = '<button class="small" data-expand="' + c.id + '" style="margin:0 0 8px 34px;background:transparent;border-color:transparent;color:var(--muted)">' + (open ? '▾ Hide' : '▸ Show') + ' the ' + members.length + ' categories in this row</button>';
-    return '<div data-group="' + c.id + '">' + row + toggle + (open ? members.map(function (m) { return rowHtml(m, true); }).join('') : '') + '</div>';
+    return '<div data-group="' + c.id + '">' + row + (open ? members.map(function (m) { return rowHtml(m, true); }).join('') : '') + '</div>';
   }
   function rowList() {
     var list = visibleRows();
@@ -374,7 +373,6 @@ const PAGE_JS = String.raw`(function () {
     list.forEach(function (c) {
       var row = c.mergedInto ? find(c.mergedInto) : c;
       if (!row || seen[row.id]) return;
-      if (c.mergedInto && (S.q || S.status !== 'all')) { S.open = S.open || {}; S.open[row.id] = true; }
       seen[row.id] = true;
       out.push(row);
     });
@@ -454,7 +452,7 @@ const PAGE_JS = String.raw`(function () {
       // A merged row among the picks is the one everything goes into.
       if (target) ids = [target.id].concat(ids.filter(function (i) { return i !== target.id; }));
       var doMerge = async function (name) {
-        try { var r = await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; S.open = S.open || {}; S.open[r.id] = true; await load(); say('msg', 'Merged.', true); }
+        try { var r = await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; await load(); say('msg', 'Merged.', true); }
         catch (e) { say('msg', e.message); }
       };
       if (target) return doMerge(target.name);
@@ -572,7 +570,7 @@ const PAGE_JS = String.raw`(function () {
       var ids2 = pickedIds().filter(function (i) { return i !== target; });
       try {
         var r = await api('/api/merges', { method: 'POST', body: { ids: ids2, target: target } });
-        S.picked = {}; S.open = S.open || {}; S.open[target] = true;
+        S.picked = {};
         await load();
         say('msg', 'Added to “' + find(target).name + '”' + (r.combined ? ' (' + r.combined + ' merged row' + (r.combined > 1 ? 's' : '') + ' combined into it)' : '') + '.', true);
       } catch (e) { say('msg', e.message); el('addTo').value = ''; }
