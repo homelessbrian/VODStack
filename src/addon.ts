@@ -1,23 +1,26 @@
 // Stremio-style addon that Nuvio installs from the manifest URL.
 //
-// - Titles matched to IMDb are served under their real ID (tt…), so Nuvio shows its own
-//   normal metadata for them and asks this addon for the stream.
-// - Unmatched titles use "vodstack:<n>" IDs and get metadata from what the provider supplied.
-// - Search catalogs only return what the provider actually has.
-// - Series episodes come from the provider's get_series_info, fetched only when needed.
+// - The titles come from the viewer's shared library; stream links use the viewer's own login.
+// - Titles matched to IMDb use their real ID (tt…), so Nuvio shows its normal metadata for them.
+// - Unmatched titles use "vodstack:<n>" IDs with the provider's own name/poster.
+// - Search only returns what the provider has. Series episodes come from get_series_info.
+//
+// Reads are kept small: a row page reads ~100 titles via an index, search reads only matching
+// search terms, and responses carry cache headers so players can reuse them.
 import {
-  decrypt,
+  catalogsFor,
+  getLibrary,
+  getLogin,
   json,
-  m3uCredentials,
+  playbackUrl,
   providerRequest,
   setupByAddonToken,
   xtreamApiUrl,
   xtreamStreamUrl,
   type Env,
   type SourceConfig,
-  type SourceKind,
 } from './lib';
-import { cleanTitle, displayTitle, norm } from './tmdb';
+import { displayTitle, norm } from './tmdb';
 
 const PAGE = 100;
 type ItemRow = {
@@ -29,8 +32,14 @@ type ItemRow = {
   overview: string | null;
   media_type: 'movie' | 'series';
   imdb_id: string | null;
+  catalog_id?: number;
 };
-const ITEM_COLS = 'v.id,v.title,v.year,v.poster_url,v.tmdb_poster,v.overview,v.media_type,v.imdb_id';
+const ITEM_COLS = 'v.id,v.title,v.year,v.poster_url,v.tmdb_poster,v.overview,v.media_type,v.imdb_id,v.catalog_id';
+
+const cached = (data: unknown, seconds: number) =>
+  new Response(JSON.stringify(data), {
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${seconds}` },
+  });
 
 function metaPreview(x: ItemRow) {
   return {
@@ -49,8 +58,7 @@ function dedupe<T extends { id: string }>(list: T[]) {
 }
 function parseExtra(extra: string | undefined) {
   const out: Record<string, string> = {};
-  if (!extra) return out;
-  for (const part of extra.split('&')) {
+  for (const part of (extra || '').split('&')) {
     const i = part.indexOf('=');
     if (i > 0)
       try {
@@ -60,19 +68,8 @@ function parseExtra(extra: string | undefined) {
   return out;
 }
 
-type SourceInfo = { kind: SourceKind; cfg: SourceConfig; name: string };
-async function loadSource(env: Env, cache: Map<string, SourceInfo | null>, sourceId: string) {
-  if (cache.has(sourceId)) return cache.get(sourceId)!;
-  const s = await env.DB.prepare('SELECT kind,name,encrypted_config FROM sources WHERE id=?')
-    .bind(sourceId)
-    .first<{ kind: SourceKind; name: string; encrypted_config: string }>();
-  const info = s ? { kind: s.kind, name: s.name, cfg: await decrypt<SourceConfig>(env, s.encrypted_config) } : null;
-  cache.set(sourceId, info);
-  return info;
-}
-
 type Episode = { id: string; season: number; episode: number; title: string; ext: string; plot?: string; image?: string; released?: string };
-/** One provider request: the episode list for an Xtream series. */
+/** One provider request (with the viewer's login): the episode list for an Xtream series. */
 async function seriesEpisodes(env: Env, cfg: SourceConfig, seriesId: string): Promise<Episode[]> {
   const r = await providerRequest(env, cfg, xtreamApiUrl(cfg, { action: 'get_series_info', series_id: seriesId }), 30000);
   const data = (await r.json().catch(() => null)) as any;
@@ -98,23 +95,13 @@ async function seriesEpisodes(env: Env, cfg: SourceConfig, seriesId: string): Pr
   return out.sort((a, b) => a.season - b.season || a.episode - b.episode);
 }
 
-function stream(url: string, source: string, detail: string, sourceId: string) {
+function stream(url: string, library: string, detail: string) {
   return {
     name: 'VODStack',
-    title: [source, detail].filter(Boolean).join(' · '),
+    title: [library, detail].filter(Boolean).join(' · '),
     url,
-    behaviorHints: { notWebReady: true, bingeGroup: `vodstack-${sourceId}` },
+    behaviorHints: { notWebReady: true, bingeGroup: 'vodstack' },
   };
-}
-function playbackUrl(info: SourceInfo, ref: string, providerItemId: string) {
-  if (ref.startsWith('xt:') && info.kind === 'xtream') return xtreamStreamUrl(info.cfg, 'movie', providerItemId, ref.slice(3));
-  if (ref.startsWith('url:')) {
-    const creds = m3uCredentials(info.cfg);
-    let u = ref.slice(4);
-    if (creds) u = u.split('{u}').join(creds.username).split('{p}').join(creds.password);
-    return u;
-  }
-  return null;
 }
 
 export async function handleAddon(env: Env, path: string): Promise<Response | null> {
@@ -123,6 +110,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   const owner = await setupByAddonToken(env, m[1]);
   if (!owner) return json({ error: 'Invalid addon token.' }, 401);
   const setupId = owner.id;
+  const lib = await getLibrary(env, setupId);
   const resource = m[3];
   const type = m[4] as 'movie' | 'series';
   let id = m[5] || '';
@@ -132,90 +120,89 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   const extra = parseExtra(m[6]);
 
   if (m[2] === 'manifest.json') {
-    const cats = await env.DB.prepare(
-      'SELECT id,display_name,media_type FROM catalogs WHERE setup_id=? AND is_hidden=0 ORDER BY sort_order,display_name',
-    )
-      .bind(setupId)
-      .all<{ id: string; display_name: string; media_type: string }>();
-    return json({
-      id: 'com.vodstack.addon',
-      version: '0.2.0',
-      name: 'VODStack',
-      description: 'Your IPTV provider’s movies and series, with search.',
-      types: ['movie', 'series'],
-      idPrefixes: ['tt', 'vodstack'],
-      resources: [
-        'catalog',
-        { name: 'meta', types: ['movie', 'series'], idPrefixes: ['vodstack'] },
-        { name: 'stream', types: ['movie', 'series'], idPrefixes: ['tt', 'vodstack'] },
-      ],
-      catalogs: [
-        ...cats.results.map((c) => ({
-          type: c.media_type === 'series' ? 'series' : 'movie',
-          id: `vodstack_${c.id}`,
-          name: c.display_name,
-          extra: [{ name: 'skip', isRequired: false }],
-        })),
-        { type: 'movie', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
-        { type: 'series', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
-      ],
-      behaviorHints: { configurable: false, configurationRequired: false },
-    });
+    // Hidden and empty categories are left out, so Nuvio doesn't request rows nobody sees.
+    const cats = lib ? (await catalogsFor(env, setupId, lib.id)).filter((c) => !c.hidden && c.item_count > 0) : [];
+    return cached(
+      {
+        id: 'com.vodstack.addon',
+        version: '0.3.0',
+        name: 'VODStack',
+        description: lib ? `${lib.name}: movies and series, with search.` : 'Your IPTV provider’s movies and series.',
+        types: ['movie', 'series'],
+        idPrefixes: ['tt', 'vodstack'],
+        resources: [
+          'catalog',
+          { name: 'meta', types: ['movie', 'series'], idPrefixes: ['vodstack'] },
+          { name: 'stream', types: ['movie', 'series'], idPrefixes: ['tt', 'vodstack'] },
+        ],
+        catalogs: [
+          ...cats.map((c) => ({ type: c.media_type, id: `vodstack_${c.id}`, name: c.name, extra: [{ name: 'skip', isRequired: false }] })),
+          { type: 'movie', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
+          { type: 'series', id: 'vodstack_search', name: 'VODStack', extra: [{ name: 'search', isRequired: true }] },
+        ],
+        behaviorHints: { configurable: false, configurationRequired: false },
+      },
+      300,
+    );
   }
+  if (!lib) return json(resource === 'catalog' ? { metas: [] } : resource === 'meta' ? { meta: null } : { streams: [] });
 
   if (resource === 'catalog') {
     if (id === 'vodstack_search') {
-      const q = String(extra.search || '').trim().slice(0, 100);
-      const words = norm(q).split(' ').filter(Boolean).slice(0, 6);
-      if (!words.length) return json({ metas: [] });
-      // Each word must appear in the title. Hidden categories are left out of search too.
-      const like = (w: string) => '%' + w.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+      const q = norm(String(extra.search || '')).slice(0, 60);
+      if (!q) return json({ metas: [] });
+      const prefix = lib.id.slice(0, 8) + ' ';
       const rows = (
         await env.DB.prepare(
-          `SELECT ${ITEM_COLS} FROM vod_items v JOIN catalogs c ON c.id=v.catalog_id AND c.is_hidden=0
-           WHERE v.setup_id=? AND v.media_type=? AND v.is_available=1 AND ${words.map(() => "COALESCE(v.search_text,lower(v.title)) LIKE ? ESCAPE '\\'").join(' AND ')}
-           LIMIT 300`,
+          `SELECT ${ITEM_COLS} FROM (SELECT DISTINCT item_id FROM search_terms WHERE term >= ?1 AND term < ?2 LIMIT 300) t
+           CROSS JOIN vod_items v ON v.id=t.item_id WHERE v.library_id=?3 AND v.media_type=?4 AND v.is_available=1`,
         )
-          .bind(setupId, type, ...words.map(like))
+          .bind(prefix + q, prefix + q + '~', lib.id, type)
           .all<ItemRow>()
       ).results;
-      const nq = norm(q);
+      // Leave out categories this person hid (a tiny read: only their own changed rows).
+      const hidden = new Set(
+        (
+          await env.DB.prepare('SELECT catalog_id FROM catalog_prefs WHERE setup_id=? AND is_hidden=1').bind(setupId).raw<[number]>()
+        ).map((r) => r[0]),
+      );
       const rank = (x: ItemRow) => {
         const t = norm(displayTitle(x.title));
-        return (t === nq ? 0 : t.startsWith(nq) ? 1 : 2) * 2 + (x.imdb_id ? 0 : 1);
+        return (t === q ? 0 : t.startsWith(q) ? 1 : 2) * 2 + (x.imdb_id ? 0 : 1);
       };
-      rows.sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title));
-      return json({ metas: dedupe(rows.map(metaPreview)).slice(0, PAGE) });
+      const list = rows.filter((r) => !hidden.has(r.catalog_id!)).sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title));
+      return cached({ metas: dedupe(list.map(metaPreview)).slice(0, PAGE) }, 600);
     }
-    const skip = Math.max(0, Math.min(100000, Number(extra.skip) || 0));
+    const catalogId = Number(id.replace(/^vodstack_/, ''));
+    const cat = await env.DB.prepare(
+      'SELECT c.id,p.is_hidden FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.id=? AND c.library_id=?',
+    )
+      .bind(setupId, catalogId, lib.id)
+      .first<{ id: number; is_hidden: number | null }>();
+    if (!cat || cat.is_hidden) return json({ metas: [] });
+    const skip = Math.max(0, Math.min(50000, Number(extra.skip) || 0));
+    // Walks the (catalog_id, title) index: reads only the titles on this page (plus any skipped).
     const rows = (
-      await env.DB.prepare(
-        `SELECT ${ITEM_COLS} FROM vod_items v JOIN catalogs c ON c.id=v.catalog_id
-         WHERE c.setup_id=? AND c.id=? AND c.is_hidden=0 AND v.is_available=1 ORDER BY v.title LIMIT ? OFFSET ?`,
-      )
-        .bind(setupId, id.replace(/^vodstack_/, ''), PAGE, skip)
+      await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ORDER BY v.title LIMIT ? OFFSET ?`)
+        .bind(catalogId, PAGE, skip)
         .all<ItemRow>()
     ).results;
-    return json({ metas: dedupe(rows.map(metaPreview)) });
+    return cached({ metas: dedupe(rows.map(metaPreview)) }, 1800);
   }
-
-  const sources = new Map<string, SourceInfo | null>();
 
   if (resource === 'meta') {
     const n = Number((id.match(/^vodstack:(\d+)$/) || [])[1]);
     const item = n
-      ? await env.DB.prepare(
-          `SELECT ${ITEM_COLS},v.source_id,v.provider_item_id FROM vod_items v WHERE v.setup_id=? AND v.id=? AND v.is_available=1`,
-        )
-          .bind(setupId, n)
-          .first<ItemRow & { source_id: string; provider_item_id: string }>()
+      ? await env.DB.prepare(`SELECT ${ITEM_COLS},v.provider_item_id FROM vod_items v WHERE v.id=? AND v.library_id=? AND v.is_available=1`)
+          .bind(n, lib.id)
+          .first<ItemRow & { provider_item_id: string }>()
       : null;
     if (!item) return json({ meta: null }, 404);
     const meta: Record<string, unknown> = { ...metaPreview(item), id: `vodstack:${item.id}`, background: item.tmdb_poster || item.poster_url || undefined };
     if (item.media_type === 'series') {
-      const src = await loadSource(env, sources, item.source_id);
-      if (src?.kind === 'xtream') {
-        const eps = await seriesEpisodes(env, src.cfg, item.provider_item_id);
+      if (lib.kind === 'xtream') {
+        const cfg = await getLogin(env, setupId, lib.id);
+        const eps = cfg ? await seriesEpisodes(env, cfg, item.provider_item_id) : [];
         meta.videos = eps.map((e) => ({
           id: `vodstack:${item.id}:ep:${e.id}:${e.ext.replace(/[^a-z0-9]/gi, '')}`,
           title: e.title,
@@ -231,27 +218,24 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
         meta.videos = [{ id: `vodstack:${item.id}`, title: displayTitle(item.title), season: se ? Number(se[1]) : 1, episode: se ? Number(se[2]) : 1 }];
       }
     }
-    return json({ meta });
+    return cached({ meta }, 3600);
   }
 
-  // ---- streams ----
+  // ---- streams: built from the viewer's own login ----
+  const cfg = await getLogin(env, setupId, lib.id);
+  if (!cfg) return json({ streams: [] });
   const streams: ReturnType<typeof stream>[] = [];
   const own = id.match(/^vodstack:(\d+)(?::ep:([^:]+):([a-z0-9]{1,8}))?$/i);
   if (own) {
-    const item = await env.DB.prepare(
-      `SELECT v.id,v.source_id,v.provider_item_id,v.playback_ref,v.media_type,c.display_name FROM vod_items v JOIN catalogs c ON c.id=v.catalog_id WHERE v.setup_id=? AND v.id=? AND v.is_available=1`,
-    )
-      .bind(setupId, Number(own[1]))
-      .first<{ id: number; source_id: string; provider_item_id: string; playback_ref: string | null; media_type: string; display_name: string }>();
-    const src = item && (await loadSource(env, sources, item.source_id));
-    if (item && src) {
-      const url = own[2]
-        ? src.kind === 'xtream'
-          ? xtreamStreamUrl(src.cfg, 'series', own[2], own[3])
-          : null
-        : playbackUrl(src, item.playback_ref || '', item.provider_item_id);
-      if (url) streams.push(stream(url, src.name, item.display_name, item.source_id));
+    if (own[2]) {
+      if (lib.kind === 'xtream') streams.push(stream(xtreamStreamUrl(cfg, 'series', own[2], own[3]), lib.name, ''));
+      return json({ streams });
     }
+    const item = await env.DB.prepare('SELECT provider_item_id,playback_ref FROM vod_items WHERE id=? AND library_id=? AND is_available=1')
+      .bind(Number(own[1]), lib.id)
+      .first<{ provider_item_id: string; playback_ref: string | null }>();
+    const url = item && playbackUrl(lib.kind, cfg, item.playback_ref || '', item.provider_item_id);
+    if (url) streams.push(stream(url, lib.name, ''));
     return json({ streams });
   }
 
@@ -259,30 +243,25 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   if (!tt) return json({ streams });
   const rows = (
     await env.DB.prepare(
-      `SELECT v.id,v.source_id,v.provider_item_id,v.playback_ref,c.display_name FROM vod_items v JOIN catalogs c ON c.id=v.catalog_id
-       WHERE v.setup_id=? AND v.imdb_id=? AND v.media_type=? AND v.is_available=1 LIMIT 6`,
+      `SELECT v.provider_item_id,v.playback_ref,c.source_category_name AS cat FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id
+       WHERE v.imdb_id=? AND v.library_id=? AND v.media_type=? AND v.is_available=1 LIMIT 6`,
     )
-      .bind(setupId, tt[1], type)
-      .all<{ id: number; source_id: string; provider_item_id: string; playback_ref: string | null; display_name: string }>()
+      .bind(tt[1], lib.id, type)
+      .all<{ provider_item_id: string; playback_ref: string | null; cat: string }>()
   ).results;
   const done = new Set<string>();
   for (const r of rows) {
-    const key = r.source_id + '|' + r.provider_item_id;
-    if (done.has(key)) continue; // same title listed in several categories
-    done.add(key);
-    const src = await loadSource(env, sources, r.source_id);
-    if (!src) continue;
+    if (done.has(r.provider_item_id)) continue; // same title listed in several categories
+    done.add(r.provider_item_id);
     if (type === 'movie') {
-      const url = playbackUrl(src, r.playback_ref || '', r.provider_item_id);
-      if (url) streams.push(stream(url, src.name, r.display_name, r.source_id));
-    } else if (src.kind === 'xtream' && tt[2]) {
+      const url = playbackUrl(lib.kind, cfg, r.playback_ref || '', r.provider_item_id);
+      if (url) streams.push(stream(url, lib.name, r.cat));
+    } else if (lib.kind === 'xtream' && tt[2]) {
       try {
-        const ep = (await seriesEpisodes(env, src.cfg, r.provider_item_id)).find(
-          (e) => e.season === Number(tt[2]) && e.episode === Number(tt[3]),
-        );
-        if (ep) streams.push(stream(xtreamStreamUrl(src.cfg, 'series', ep.id, ep.ext), src.name, `S${tt[2]} E${tt[3]}`, r.source_id));
+        const ep = (await seriesEpisodes(env, cfg, r.provider_item_id)).find((e) => e.season === Number(tt[2]) && e.episode === Number(tt[3]));
+        if (ep) streams.push(stream(xtreamStreamUrl(cfg, 'series', ep.id, ep.ext), lib.name, `S${tt[2]} E${tt[3]}`));
       } catch {
-        // Provider unreachable for this one; other sources may still work.
+        // Provider unreachable for this one.
       }
     }
     if (streams.length >= 4) break;

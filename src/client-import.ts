@@ -48,9 +48,9 @@ window.VODImport = (function () {
   function mb(n) { return (n / 1048576).toFixed(1) + ' MB'; }
 
   // Ask the Worker to fetch one list from the provider. Exactly one provider request.
-  async function providerText(sourceId, part, label, progress) {
+  async function providerText(part, label, progress) {
     progress('Downloading ' + label + '…');
-    var r = await fetch('/api/sources/' + encodeURIComponent(sourceId) + '/provider?part=' + part, { credentials: 'same-origin' });
+    var r = await fetch('/api/library/provider?part=' + part, { credentials: 'same-origin' });
     if (!r.ok) {
       var d = {};
       try { d = await r.json(); } catch (e) {}
@@ -133,16 +133,16 @@ window.VODImport = (function () {
   }
 
   // ---------- Xtream ----------
-  async function loadXtream(sourceId, progress) {
-    var acct = parseJson(await providerText(sourceId, 'account', 'account info', progress), 'account info');
+  async function loadXtream(progress) {
+    var acct = parseJson(await providerText('account', 'account info', progress), 'account info');
     var ui = acct && acct.user_info;
     if (!ui || String(ui.auth) === '0') throw new Error('The provider rejected the login. Double-check the server URL, username and password.');
     if (ui.status && String(ui.status).toLowerCase() !== 'active') throw new Error('The provider says this account is "' + ui.status + '".');
 
-    var vodCats = parseJson(await providerText(sourceId, 'vod_categories', 'movie categories', progress), 'movie categories');
-    var serCats = parseJson(await providerText(sourceId, 'series_categories', 'series categories', progress), 'series categories');
-    var movies = parseJson(await providerText(sourceId, 'vod_streams', 'all movies', progress), 'movies');
-    var series = parseJson(await providerText(sourceId, 'series', 'all series', progress), 'series');
+    var vodCats = parseJson(await providerText('vod_categories', 'movie categories', progress), 'movie categories');
+    var serCats = parseJson(await providerText('series_categories', 'series categories', progress), 'series categories');
+    var movies = parseJson(await providerText('vod_streams', 'all movies', progress), 'movies');
+    var series = parseJson(await providerText('series', 'all series', progress), 'series');
     progress('Reading provider data…');
 
     var cats = {};
@@ -179,8 +179,8 @@ window.VODImport = (function () {
   }
 
   // ---------- Save ----------
-  async function save(sourceId, data, progress) {
-    var base = '/api/sources/' + encodeURIComponent(sourceId);
+  async function save(data, progress) {
+    var base = '/api/library';
     if (!data.items.length) throw new Error('No movies or series were found in this source.' + (data.skippedLive ? ' (' + data.skippedLive.toLocaleString() + ' live channels were skipped.)' : ''));
 
     for (var i = 0; i < data.catalogs.length; i += CATALOG_CHUNK) {
@@ -277,14 +277,14 @@ window.VODImport = (function () {
         progress('Matching with TMDB… ' + done.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + matched.toLocaleString() + ' matched)');
       }
     }
-    if (total) await Promise.all([worker(), worker(), worker()]);
+    if (total) { await Promise.all([worker(), worker(), worker()]); await call('POST', '/api/tmdb/stats', {}); }
     return { total: total, matched: matched, unmatched: unmatched };
   }
 
   var running = false;
   // fileText: playlist contents the user picked from their own device. Used when the
   // provider blocks requests coming from Cloudflare (e.g. "error code: 1106").
-  async function run(sourceId, kind, progress, fileText) {
+  async function run(kind, progress, fileText) {
     if (running) throw new Error('An import is already running. Wait for it to finish.');
     running = true;
     progress = progress || function () {};
@@ -292,9 +292,9 @@ window.VODImport = (function () {
       var data;
       if (kind === 'xtream' && typeof fileText === 'string') throw new Error('Playlist files can only be used with M3U sources. Add this provider as an M3U playlist instead.');
       if (typeof fileText !== 'string') await wakeRelay(progress);
-      if (kind === 'xtream') data = await loadXtream(sourceId, progress);
+      if (kind === 'xtream') data = await loadXtream(progress);
       else {
-        var text = typeof fileText === 'string' ? fileText : await providerText(sourceId, 'playlist', 'playlist', progress);
+        var text = typeof fileText === 'string' ? fileText : await providerText('playlist', 'playlist', progress);
         progress('Reading playlist…');
         if (text.replace(/^﻿/, '').trim().indexOf('#EXTM3U') !== 0 && text.indexOf('#EXTINF') < 0) {
           var start = text.trim().slice(0, 140).replace(/\s+/g, ' ');
@@ -302,9 +302,9 @@ window.VODImport = (function () {
         }
         data = parseM3U(text);
       }
-      return await save(sourceId, data, progress);
+      return await save(data, progress);
     } catch (e) {
-      try { await call('POST', '/api/sources/' + encodeURIComponent(sourceId) + '/import/finish', { error: e.message }); } catch (e2) {}
+      try { await call('POST', '/api/library/import/finish', { error: e.message }); } catch (e2) {}
       throw e;
     } finally {
       running = false;

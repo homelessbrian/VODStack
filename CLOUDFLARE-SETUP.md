@@ -1,6 +1,6 @@
 # Cloudflare setup (Windows-friendly)
 
-This deploys the current prototype to Cloudflare Workers with a persistent D1 database. Do not add real IPTV credentials until you have deployed privately and tested the application.
+This deploys the current prototype to Cloudflare Workers with a Turso database. Do not add real IPTV credentials until you have deployed privately and tested the application.
 
 ## 1. Install prerequisites
 
@@ -17,15 +17,9 @@ This deploys the current prototype to Cloudflare Workers with a persistent D1 da
 
    Wrangler opens a browser so you can authorize it to access your Cloudflare account.
 
-## 2. Create the D1 database
+## 2. Create the database
 
-Run:
-
-```powershell
-npx wrangler d1 create vodstack
-```
-
-Cloudflare returns a database UUID. Open `wrangler.toml` and replace `REPLACE_WITH_D1_DATABASE_ID` with that exact UUID. Keep the binding name `DB` and database name `vodstack` unchanged unless you also update the config.
+Follow [`TURSO-SETUP.md`](./TURSO-SETUP.md) to create the Turso database and add `TURSO_URL` and `TURSO_TOKEN` as Worker secrets. VODStack creates its tables automatically.
 
 ## 3. Create the encryption key
 
@@ -41,18 +35,6 @@ $key | npx wrangler secret put ENCRYPTION_KEY
 ```
 
 Wrangler prompts you to confirm the secret. Save a copy of the generated key in a password manager or other secure offline location before closing the PowerShell window. Cloudflare stores Worker secrets encrypted and exposes them to the application at runtime. See https://developers.cloudflare.com/workers/configuration/secrets/.
-
-## 4. Apply database migrations
-
-Apply the schema to your remote D1 database:
-
-```powershell
-npx wrangler d1 migrations apply vodstack --remote
-```
-
-Review the output and confirm all migrations are applied. This creates the setup/session tables, IPTV source and catalog tables, and TMDB match fields.
-
-Run this command again whenever a new file appears in `migrations/` (for example after pulling an update).
 
 ## 5. Test locally first (recommended)
 
@@ -88,20 +70,17 @@ TMDB matching uses provider titles and optional year hints. Automated title matc
 
 ## Updating an existing deployment
 
-When an update adds a file to `migrations/`, the database must be updated **before** the new code runs, or the site will error. Cloudflare's GitHub auto-deploy does not do this on its own. Use one of these:
-
-- **From PowerShell** (in the project folder): `npx wrangler d1 migrations apply vodstack --remote`, then `npm run deploy`.
-- **From the Cloudflare dashboard only**: open *Storage & Databases → D1 → vodstack → Console* and run each statement of the new migration file **one at a time** (the console only runs the first statement of a paste). If your database was set up through the console, there is no `d1_migrations` table and nothing else is needed.
+Database changes are applied automatically by the Worker on its first request after an update. There are no migration steps.
 
 ## How imports work (and why)
 
-Cloudflare's Workers Free plan gives each request about 10 ms of CPU and 50 database calls, and D1 Free allows 100,000 row writes per day. A big IPTV library cannot be imported inside one request under those limits, so the import is split up:
+Cloudflare's Workers Free plan gives each request about 10 ms of CPU and 50 database calls, and the database's free plan has usage limits. A big IPTV library cannot be imported inside one request under those limits, so the import is split up:
 
 1. The Worker downloads each provider list **once** and streams it to your browser unchanged. M3U = 1 provider request per import; Xtream = 5 (account check, movie categories, series categories, all movies, all series).
 2. Your browser parses the data and compares it with what is already saved.
 3. Only new or changed titles are sent back, a few hundred at a time; each batch is saved with a single SQL statement.
 
-Keep the dashboard tab open until the import finishes. Each new title costs 2 row writes, so a first import of roughly 45,000 titles fits in one day's free allowance. If you hit the daily limit, run **Refresh** after 00:00 UTC; titles already saved are skipped. Refreshes only write titles that changed.
+Keep the dashboard tab open until the import finishes. Refreshes only write titles that changed, and the library is shared, so friends who join cost no imports at all.
 
 Stored stream links never contain your password: Xtream links are rebuilt from the encrypted source settings at play time, and M3U links store placeholders that are filled in at play time.
 

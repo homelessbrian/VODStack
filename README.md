@@ -13,15 +13,23 @@ A VOD-only IPTV catalog manager for Nuvio. Imports Xtream Codes and M3U sources,
 - Automatic TMDB matching after each import (cleans provider titles like "EN - Dune (2021) [4K]", uses provider TMDB IDs when given). Matched titles are served under their IMDb IDs so Nuvio shows its normal metadata.
 - Addon search (only what the provider has), paged catalogs, and playable Xtream series episodes.
 - TMDB v3 key validation, including metadata/artwork enrichment and stored match status.
-- Cloudflare Workers + D1 deployment configuration and migrations.
+- Cloudflare Workers deployment with a Turso database (tables created automatically).
 
 ## Providers that block Cloudflare
 
 If imports fail with "error code: 1106", the provider blocks Cloudflare Workers. Either set up the optional relay on Render ([`RELAY-SETUP.md`](./RELAY-SETUP.md), browser only) or use **Refresh from file** with a playlist downloaded in your browser.
 
+## Shared libraries
+
+One person (the owner) imports a provider once; friends on the same provider join with an invite link and enter only their own login. Titles, categories and TMDB matches are stored once and shared, and stream links use each viewer's own login. Everyone can rename, hide and reorder rows for themselves.
+
+## Database
+
+Data lives in Turso (free plan counts usage monthly). See [`TURSO-SETUP.md`](./TURSO-SETUP.md). Tables are created automatically.
+
 ## Deploy
 
-Follow [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) for Windows PowerShell instructions, including D1 setup, encryption secret creation, migrations, deployment and TMDB setup.
+Follow [`CLOUDFLARE-SETUP.md`](./CLOUDFLARE-SETUP.md) for Windows PowerShell instructions, including database setup, encryption secret creation, deployment and TMDB setup.
 
 ## Important limitations
 

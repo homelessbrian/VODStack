@@ -33,9 +33,24 @@ const plausibleYear = (y: number) => y >= 1900 && y <= new Date().getUTCFullYear
 export function displayTitle(raw: string) {
   return cleanTitle(raw, false).replace(/\s[-–]\s(?:19|20)\d{2}$/, '');
 }
-/** Accent-free, punctuation-free text that search matches against. */
-export function searchText(...titles: (string | null | undefined)[]) {
-  return [...new Set(titles.filter(Boolean).map((t) => norm(cleanTitle(String(t), false))))].join(' | ');
+const STOP = new Set(['the', 'a', 'an', 'of', 'and', 'in', 'on', 'to', 'for', 'at', 'by', 'de', 'la', 'le', 'el', 'les', 'der', 'die', 'das']);
+/**
+ * Search keys for a title: the normalized title from each word onwards, so "the matrix reloaded"
+ * is found by "matrix" and "reloaded" too. Keys start with the library's prefix, so a search is
+ * one index range per library and reads only the matches.
+ */
+export function searchTerms(libraryId: string, ...titles: (string | null | undefined)[]) {
+  const prefix = libraryId.slice(0, 8) + ' ';
+  const out = new Set<string>();
+  for (const t of titles) {
+    if (!t) continue;
+    const words = norm(cleanTitle(String(t), false)).split(' ').filter(Boolean);
+    for (let i = 0; i < words.length && i < 8; i++) {
+      if (i > 0 && STOP.has(words[i])) continue;
+      out.add(prefix + words.slice(i).join(' ').slice(0, 60));
+    }
+  }
+  return [...out].slice(0, 16);
 }
 export function yearHint(raw: string) {
   const m = String(raw || '').match(/\(\s*((?:19|20)\d{2})\s*\)|[-–\s]((?:19|20)\d{2})\s*$/);
@@ -100,7 +115,7 @@ async function tmdbGet(base: string, apiKey: string, path: string, params: Recor
 }
 
 type Row = { id: number; title: string; year: number | null; media_type: MediaType; tmdb_id: number | null };
-type Result = { id: number; status: 'matched' | 'unmatched' | 'error'; tmdb: number | null; imdb: string | null; poster: string | null; score: number | null; st?: string };
+type Result = { id: number; status: 'matched' | 'unmatched' | 'error'; tmdb: number | null; imdb: string | null; poster: string | null; score: number | null; names?: string[] };
 
 async function matchOne(base: string, apiKey: string, row: Row): Promise<Result> {
   const kind = row.media_type === 'series' ? 'tv' : 'movie';
@@ -112,7 +127,7 @@ async function matchOne(base: string, apiKey: string, row: Row): Promise<Result>
       tmdb: Number(d.id),
       imdb: /^tt\d+$/.test(imdb) ? imdb : null,
       poster: d.poster_path ? IMG + d.poster_path : null,
-      st: searchText(row.title, d.title || d.name, d.original_title || d.original_name),
+      names: [d.title || d.name, d.original_title || d.original_name].filter(Boolean) as string[],
     };
   };
   // 1. The provider already told us the TMDB ID.
@@ -134,14 +149,14 @@ async function matchOne(base: string, apiKey: string, row: Row): Promise<Result>
     const second = pickBest(res?.results || [], variants);
     if (second && (!best || second.score > best.score)) best = second;
   }
-  if (!best || !best.id) return { id: row.id, status: 'unmatched', tmdb: null, imdb: null, poster: null, score: best ? best.score : null, st: searchText(row.title) };
+  if (!best || !best.id) return { id: row.id, status: 'unmatched', tmdb: null, imdb: null, poster: null, score: best ? best.score : null };
   const d = await details(best.id);
-  if (!d) return { id: row.id, status: 'unmatched', tmdb: null, imdb: null, poster: null, score: best.score, st: searchText(row.title) };
+  if (!d) return { id: row.id, status: 'unmatched', tmdb: null, imdb: null, poster: null, score: best.score };
   return { id: row.id, status: 'matched', ...d, score: Math.round(best.score * 1000) / 1000 };
 }
 
 /** POST /api/tmdb/match {ids:[…]} — match up to MATCH_BATCH titles and save the results in one statement. */
-export async function matchBatch(env: Env, setupId: string, ids: number[]) {
+export async function matchBatch(env: Env, setupId: string, libraryId: string, ids: number[]) {
   const secret = await env.DB.prepare('SELECT encrypted_value FROM setup_secrets WHERE setup_id=? AND secret_name=?')
     .bind(setupId, 'tmdb_api_key')
     .first<{ encrypted_value: string }>();
@@ -149,9 +164,9 @@ export async function matchBatch(env: Env, setupId: string, ids: number[]) {
   const { apiKey } = await decrypt<{ apiKey: string }>(env, secret.encrypted_value);
   const rows = (
     await env.DB.prepare(
-      "SELECT id,title,year,media_type,tmdb_id FROM vod_items WHERE setup_id=?1 AND tmdb_match_status='pending' AND id IN (SELECT value FROM json_each(?2))",
+      "SELECT id,title,year,media_type,tmdb_id FROM vod_items WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?1 AND tmdb_match_status='pending'",
     )
-      .bind(setupId, JSON.stringify(ids.slice(0, MATCH_BATCH)))
+      .bind(libraryId, JSON.stringify(ids.slice(0, MATCH_BATCH)))
       .all<Row>()
   ).results;
   const results: Result[] = [];
@@ -171,15 +186,24 @@ export async function matchBatch(env: Env, setupId: string, ids: number[]) {
       }
     }),
   );
-  if (results.length)
-    await env.DB.prepare(
-      `UPDATE vod_items SET tmdb_match_status=json_extract(r.value,'$.status'),tmdb_id=COALESCE(json_extract(r.value,'$.tmdb'),vod_items.tmdb_id),
-         imdb_id=json_extract(r.value,'$.imdb'),tmdb_poster=json_extract(r.value,'$.poster'),tmdb_match_score=json_extract(r.value,'$.score'),
-         search_text=COALESCE(json_extract(r.value,'$.st'),vod_items.search_text)
-       FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$.id') AND vod_items.setup_id=?1`,
-    )
-      .bind(setupId, JSON.stringify(results))
-      .run();
+  if (results.length) {
+    const writes = [
+      env.DB.prepare(
+        `UPDATE vod_items SET tmdb_match_status=json_extract(r.value,'$.status'),tmdb_id=COALESCE(json_extract(r.value,'$.tmdb'),vod_items.tmdb_id),
+           imdb_id=json_extract(r.value,'$.imdb'),tmdb_poster=json_extract(r.value,'$.poster'),tmdb_match_score=json_extract(r.value,'$.score')
+         FROM json_each(?2) r WHERE vod_items.id=json_extract(r.value,'$.id') AND vod_items.library_id=?1`,
+      ).bind(libraryId, JSON.stringify(results.map(({ names, ...r }) => r))),
+    ];
+    // Make TMDB's names searchable too (e.g. a French provider title found by its English name).
+    const terms = results.flatMap((r) => (r.names ? searchTerms(libraryId, ...r.names).map((t) => [t, r.id]) : []));
+    if (terms.length)
+      writes.push(
+        env.DB.prepare(
+          "INSERT OR IGNORE INTO search_terms(term,item_id) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)",
+        ).bind(JSON.stringify(terms)),
+      );
+    await env.DB.batch(writes);
+  }
   const count = (s: string) => results.filter((r) => r.status === s).length;
   return json({ checked: results.length, matched: count('matched'), unmatched: count('unmatched'), errors: count('error'), rateLimited });
 }

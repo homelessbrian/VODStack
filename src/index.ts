@@ -1,49 +1,127 @@
+// VODStack Worker: dashboard API + Nuvio addon.
+//
+// Data model (see db.ts):
+// - A library holds one provider's categories and titles. It is imported, refreshed and TMDB-matched
+//   once, by its owner, and shared by everyone who joins it with the owner's invite link.
+// - Each person (a "setup") stores only their own provider login, and their own row names/order/
+//   hidden choices. Stream links are built from the viewer's own login at play time.
 import { dashboard } from './dashboard';
 import { handleAddon } from './addon';
-import { MATCH_BATCH, matchBatch, searchText, tmdbBase } from './tmdb';
+import { getDb } from './db';
+import { MATCH_BATCH, matchBatch, searchTerms, tmdbBase } from './tmdb';
 import {
-  CatalogRow,
-  D1Database,
-  D1PreparedStatement,
-  D1Result,
-  DEFAULT_USER_AGENT,
-  Env,
+  type Env,
+  type SourceConfig,
+  type SourceKind,
+  type MediaType,
   HttpError,
-  MediaType,
-  SourceConfig,
-  SourceKind,
-  XTREAM_PARTS,
   auth,
   b64,
   clearSession,
   cookie,
   decrypt,
   encrypt,
-  explainProviderStatus,
-  getSource,
+  catalogsFor,
+  getLibrary,
+  getLogin,
   hideSecrets,
   html,
   json,
-  key,
   m3uCredentials,
+  m3uStoredRef,
   mediaTypeOf,
   optHttp,
   optStr,
-  providerUrl,
+  ownedLibrary,
+  providerRequest,
   proxyProvider,
   randomCode,
   relayBase,
   responseError,
   safeUrl,
   setSession,
-  setupByAddonToken,
   sha,
   str,
-  stripCredentials,
-  unb64,
   uuid,
   wakeRelay,
+  xtreamApiUrl,
 } from './lib';
+
+const SESSION_SECONDS = 2592000;
+async function newSession(env: Env, setupId: string, body: unknown) {
+  const token = b64(crypto.getRandomValues(new Uint8Array(32)));
+  await env.DB.prepare('INSERT INTO sessions(token_hash,setup_id,expires_at) VALUES(?,?,?)')
+    .bind(await sha(token), setupId, Math.floor(Date.now() / 1000) + SESSION_SECONDS)
+    .run();
+  return new Response(JSON.stringify(body), {
+    headers: { 'content-type': 'application/json', 'set-cookie': setSession(token), 'cache-control': 'no-store' },
+  });
+}
+async function createSetup(env: Env, libraryId: string | null) {
+  const id = uuid();
+  const recoveryCode = randomCode();
+  const addonToken = b64(crypto.getRandomValues(new Uint8Array(32)));
+  await env.DB.prepare(
+    'INSERT INTO setups(id,recovery_hash,addon_token_hash,addon_token_encrypted,library_id) VALUES(?,?,?,?,?)',
+  )
+    .bind(id, await sha(recoveryCode), await sha(addonToken), await encrypt(env, { token: addonToken }), libraryId)
+    .run();
+  return { id, recoveryCode };
+}
+
+/** Validate a login form. Xtream logins are checked with one request to the provider. */
+async function readLogin(env: Env, kind: SourceKind, body: any, check: boolean): Promise<SourceConfig> {
+  const userAgent = str(body.userAgent, 300) || undefined;
+  if (kind === 'xtream') {
+    const cfg: SourceConfig = {
+      baseUrl: safeUrl(str(body.baseUrl, 500)).toString().replace(/\/(player_api\.php)?$/, '').replace(/\/$/, ''),
+      username: str(body.username, 200),
+      password: str(body.password, 200),
+      userAgent,
+    };
+    if (!cfg.username || !cfg.password) throw new HttpError(400, 'Username and password are required.');
+    if (check) {
+      const r = await providerRequest(env, cfg, xtreamApiUrl(cfg, {}), 45000);
+      const d = (await r.json().catch(() => null)) as any;
+      if (!d?.user_info || String(d.user_info.auth) === '0')
+        throw new HttpError(400, 'The provider rejected this login. Check the server URL, username and password.');
+      if (d.user_info.status && String(d.user_info.status).toLowerCase() !== 'active')
+        throw new HttpError(400, `The provider says this account is "${d.user_info.status}".`);
+    }
+    return cfg;
+  }
+  const cfg: SourceConfig = { playlistUrl: safeUrl(str(body.playlistUrl, 2000)).toString(), userAgent };
+  if (!m3uCredentials(cfg))
+    throw new HttpError(400, 'The playlist URL should contain your username and password (…get.php?username=…&password=…).');
+  return cfg;
+}
+async function saveLogin(env: Env, setupId: string, libraryId: string, cfg: SourceConfig) {
+  await env.DB.prepare(
+    "INSERT INTO logins(setup_id,library_id,encrypted_config) VALUES(?,?,?) ON CONFLICT(setup_id,library_id) DO UPDATE SET encrypted_config=excluded.encrypted_config,updated_at=datetime('now')",
+  )
+    .bind(setupId, libraryId, await encrypt(env, cfg))
+    .run();
+}
+
+async function libraryStats(env: Env, libraryId: string) {
+  const rows = (
+    await env.DB.prepare(
+      'SELECT tmdb_match_status AS s,COUNT(*) AS n,SUM(imdb_id IS NOT NULL) AS imdb FROM vod_items WHERE library_id=? AND is_available=1 GROUP BY tmdb_match_status',
+    )
+      .bind(libraryId)
+      .all<{ s: string; n: number; imdb: number }>()
+  ).results;
+  const by = Object.fromEntries(rows.map((r) => [r.s, r.n]));
+  const stats = {
+    total: rows.reduce((n, r) => n + r.n, 0),
+    pending: by.pending || 0,
+    matched: by.matched || 0,
+    unmatched: (by.unmatched || 0) + (by.error || 0),
+    withImdb: rows.reduce((n, r) => n + (r.imdb || 0), 0),
+  };
+  await env.DB.prepare('UPDATE libraries SET stats_json=? WHERE id=?').bind(JSON.stringify(stats), libraryId).run();
+  return stats;
+}
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -51,416 +129,425 @@ async function route(request: Request, env: Env): Promise<Response> {
   const method = request.method.toUpperCase();
   if (method === 'GET' && path === '/') return html(dashboard());
   if (method === 'GET' && path === '/health') return json({ ok: true, app: env.APP_NAME || 'VODStack' });
+  if (path.startsWith('/addon/')) return (await handleAddon(env, path)) || json({ error: 'Not found.' }, 404);
+  const body = method === 'POST' || method === 'PATCH' ? ((await request.json().catch(() => ({}))) as any) : {};
+
+  // ---- no session needed ----
   if (method === 'POST' && path === '/api/setup') {
-    const id = uuid(),
-      recoveryCode = randomCode(),
-      addonToken = b64(crypto.getRandomValues(new Uint8Array(32)));
-    const [recoveryHash, addonHash, addonEncrypted] = await Promise.all([
-      sha(recoveryCode),
-      sha(addonToken),
-      encrypt(env, { token: addonToken }),
-    ]);
-    await env.DB.prepare(
-      'INSERT INTO setups(id,recovery_hash,addon_token_hash,addon_token_encrypted) VALUES(?,?,?,?)',
-    )
-      .bind(id, recoveryHash, addonHash, addonEncrypted)
-      .run();
-    const token = b64(crypto.getRandomValues(new Uint8Array(32)));
-    await env.DB.prepare('INSERT INTO sessions(token_hash,setup_id,expires_at) VALUES(?,?,?)')
-      .bind(await sha(token), id, Math.floor(Date.now() / 1000) + 2592000)
-      .run();
-    return new Response(JSON.stringify({ ok: true, recoveryCode }), {
-      headers: {
-        'content-type': 'application/json',
-        'set-cookie': setSession(token),
-        'cache-control': 'no-store',
-      },
-    });
+    const s = await createSetup(env, null);
+    return newSession(env, s.id, { ok: true, recoveryCode: s.recoveryCode });
+  }
+  if (method === 'GET' && path === '/api/invite') {
+    const lib = await env.DB.prepare('SELECT name,kind FROM libraries WHERE invite_hash=?')
+      .bind(await sha(str(url.searchParams.get('code'), 200)))
+      .first<{ name: string; kind: SourceKind }>();
+    return lib ? json({ ok: true, name: lib.name, kind: lib.kind }) : json({ error: 'This invite link is no longer valid. Ask for a new one.' }, 404);
+  }
+  if (method === 'POST' && path === '/api/join') {
+    const lib = await env.DB.prepare('SELECT id FROM libraries WHERE invite_hash=?')
+      .bind(await sha(str(body.code, 200)))
+      .first<{ id: string }>();
+    if (!lib) return json({ error: 'This invite link is no longer valid. Ask for a new one.' }, 404);
+    const s = await createSetup(env, lib.id);
+    return newSession(env, s.id, { ok: true, recoveryCode: s.recoveryCode });
   }
   if (method === 'POST' && path === '/api/recover') {
-    const body = (await request.json()) as { code?: string };
-    const code = (body.code || '').trim().toUpperCase();
+    const code = str(body.code, 100).toUpperCase();
     if (!code) return json({ error: 'Recovery code required.' }, 400);
-    const row = await env.DB.prepare('SELECT id FROM setups WHERE recovery_hash=?')
-      .bind(await sha(code))
-      .first<{ id: string }>();
+    const row = await env.DB.prepare('SELECT id FROM setups WHERE recovery_hash=?').bind(await sha(code)).first<{ id: string }>();
     if (!row) return json({ error: 'Recovery code not recognized.' }, 401);
-    const token = b64(crypto.getRandomValues(new Uint8Array(32)));
-    await env.DB.prepare('INSERT INTO sessions(token_hash,setup_id,expires_at) VALUES(?,?,?)')
-      .bind(await sha(token), row.id, Math.floor(Date.now() / 1000) + 2592000)
-      .run();
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: {
-        'content-type': 'application/json',
-        'set-cookie': setSession(token),
-        'cache-control': 'no-store',
-      },
-    });
+    return newSession(env, row.id, { ok: true });
   }
   if (method === 'POST' && path === '/api/logout') {
     const token = cookie(request, 'vod_session');
-    if (token)
-      await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?')
-        .bind(await sha(token))
-        .run();
+    if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha(token)).run();
     return new Response(JSON.stringify({ ok: true }), {
-      headers: {
-        'content-type': 'application/json',
-        'set-cookie': clearSession(),
-        'cache-control': 'no-store',
-      },
+      headers: { 'content-type': 'application/json', 'set-cookie': clearSession(), 'cache-control': 'no-store' },
     });
   }
+
+  if (!path.startsWith('/api/')) return json({ error: 'Not found.' }, 404);
   const setupId = await auth(request, env);
-  if (path.startsWith('/api/')) {
-    if (!setupId) return json({ error: 'Setup session required. Recover your setup first.' }, 401);
-    if (method === 'GET' && path === '/api/state') {
-      const [catalogs, sources, setup] = await Promise.all([
-        env.DB.prepare(
-          'SELECT c.*,(SELECT COUNT(*) FROM vod_items v WHERE v.catalog_id=c.id AND v.is_available=1) AS item_count FROM catalogs c WHERE c.setup_id=? ORDER BY c.sort_order,c.display_name',
-        )
-          .bind(setupId)
-          .all<CatalogRow>(),
-        env.DB.prepare(
-          'SELECT id,name,kind,last_refresh_at,last_refresh_status,created_at FROM sources WHERE setup_id=? ORDER BY created_at',
-        )
-          .bind(setupId)
-          .all<any>(),
-        env.DB.prepare('SELECT addon_token_encrypted FROM setups WHERE id=?').bind(setupId).first<any>(),
-      ]);
-      let addonToken = '';
-      if (setup?.addon_token_encrypted) {
-        try {
-          addonToken = (await decrypt<{ token: string }>(env, setup.addon_token_encrypted)).token;
-        } catch {}
-      }
-      return json({
-        catalogs: catalogs.results,
-        sources: sources.results,
-        relayConfigured: !!relayBase(env),
-        addonUrl: addonToken ? `${url.origin}/addon/${addonToken}/manifest.json` : null,
-      });
-    }
-    if (method === 'POST' && path === '/api/sources') {
-      // Saves the source only. The browser then runs the import (see client-import.ts).
-      const body = (await request.json()) as any;
-      const name = str(body.name, 100);
-      const kind = body.kind as SourceKind;
-      if (!name || !['xtream', 'm3u'].includes(kind))
-        return json({ error: 'Source name and a supported connection type are required.' }, 400);
-      const userAgent = str(body.userAgent, 300) || undefined;
-      const cfg: SourceConfig =
-        kind === 'xtream'
-          ? {
-              baseUrl: safeUrl(str(body.baseUrl, 500))
-                .toString()
-                .replace(/\/(player_api\.php)?$/, ''),
-              username: str(body.username, 200),
-              password: str(body.password, 200),
-              userAgent,
-            }
-          : { playlistUrl: safeUrl(str(body.playlistUrl, 2000)).toString(), userAgent };
-      if (kind === 'xtream' && (!cfg.username || !cfg.password))
-        return json({ error: 'Username and password are required.' }, 400);
-      // Re-submitting the form with the same name updates that source instead of piling up duplicates.
-      const existing = await env.DB.prepare('SELECT id FROM sources WHERE setup_id=? AND name=? AND kind=?')
-        .bind(setupId, name, kind)
-        .first<{ id: string }>();
-      const id = existing?.id || uuid();
-      if (existing)
-        await env.DB.prepare('UPDATE sources SET encrypted_config=? WHERE id=?')
-          .bind(await encrypt(env, cfg), id)
-          .run();
-      else
-        await env.DB.prepare('INSERT INTO sources(id,setup_id,name,kind,encrypted_config) VALUES(?,?,?,?,?)')
-          .bind(id, setupId, name, kind, await encrypt(env, cfg))
-          .run();
-      return json({ ok: true, sourceId: id, kind });
-    }
-    if (method === 'GET' && path === '/api/relay/wake') return json(await wakeRelay(env));
-    const srcMatch = path.match(/^\/api\/sources\/([^/]+)\/(provider|index|import\/catalogs|import\/items|import\/remove|import\/finish)$/);
-    if (srcMatch) {
-      const [, sourceId, action] = srcMatch;
-      if (action === 'provider' && method === 'GET')
-        return proxyProvider(env, setupId, sourceId, url.searchParams.get('part') || '');
+  if (!setupId) return json({ error: 'Setup session required. Recover your setup first.' }, 401);
 
-      if (action === 'index' && method === 'GET') {
-        // What is already stored for this source, so the browser only sends new/changed titles.
-        const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
-        const pageSize = 5000;
-        const rows = await env.DB.prepare(
-          'SELECT v.id,v.media_type,c.source_category_id,v.provider_item_id,v.content_hash,v.is_available FROM vod_items v JOIN catalogs c ON c.id=v.catalog_id WHERE v.source_id=? AND v.setup_id=? AND v.id>? ORDER BY v.id LIMIT ?',
-        )
-          .bind(sourceId, setupId, after, pageSize)
-          .raw<[number, string, string, string, string, number]>();
-        return json({ rows, next: rows.length === pageSize ? rows[rows.length - 1][0] : null });
-      }
-
-      if (method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
-      const src = await getSource(env, setupId, sourceId);
-      const body = (await request.json()) as any;
-
-      if (action === 'import/catalogs') {
-        const list = Array.isArray(body.catalogs) ? body.catalogs : [];
-        if (!list.length || list.length > 1000) return json({ error: 'Send between 1 and 1000 categories.' }, 400);
-        const clean: { t: MediaType; c: string; n: string }[] = [];
-        for (const x of list) {
-          const t = mediaTypeOf(x?.t);
-          const c = str(x?.c, 200);
-          if (t && c) clean.push({ t, c, n: str(x?.n, 150) || c });
-        }
-        // One statement for the whole list. Renamed catalogs keep their custom name.
-        const r = await env.DB.prepare(
-          `INSERT INTO catalogs(id,setup_id,source_id,source_category_id,source_category_name,media_type,display_name,sort_order)
-           SELECT lower(hex(randomblob(16))),?1,?2,json_extract(j.value,'$.c'),json_extract(j.value,'$.n'),json_extract(j.value,'$.t'),json_extract(j.value,'$.n'),?3+j.key
-           FROM json_each(?4) j WHERE true
-           ON CONFLICT(source_id,media_type,source_category_id) DO UPDATE SET
-             display_name=CASE WHEN catalogs.display_name=catalogs.source_category_name THEN excluded.source_category_name ELSE catalogs.display_name END,
-             source_category_name=excluded.source_category_name,updated_at=datetime('now')
-           WHERE catalogs.source_category_name IS NOT excluded.source_category_name`,
-        )
-          .bind(setupId, sourceId, Date.now(), JSON.stringify(clean))
-          .run();
-        return json({ ok: true, written: r.meta.changes });
-      }
-
-      if (action === 'import/items') {
-        const list = Array.isArray(body.items) ? body.items : [];
-        if (!list.length || list.length > 500) return json({ error: 'Send between 1 and 500 titles.' }, 400);
-        const creds = src.kind === 'm3u' ? m3uCredentials(src.cfg) : null;
-        const clean = [];
-        for (const x of list) {
-          const t = mediaTypeOf(x?.t);
-          const c = str(x?.c, 200);
-          const p = str(x?.p, 200);
-          const title = str(x?.title, 300);
-          if (!t || !c || !p || !title) continue;
-          let pb: string | null = null;
-          const rawPb = str(x?.pb, 2000);
-          if (src.kind === 'xtream' && /^xt:[a-z0-9]{1,8}$/i.test(rawPb)) pb = rawPb;
-          if (src.kind === 'm3u' && /^https?:\/\//i.test(rawPb)) pb = 'url:' + stripCredentials(rawPb, creds);
-          const y = Number(x?.y);
-          clean.push({
-            t,
-            c,
-            p,
-            title,
-            y: Number.isInteger(y) && y > 1880 && y < 2200 ? y : null,
-            img: optHttp(x?.img),
-            d: optStr(x?.d, 2000),
-            pb,
-            h: str(x?.h, 32),
-            tm: Number.isInteger(Number(x?.tm)) && Number(x?.tm) > 0 ? Number(x.tm) : null,
-            // M3U lists series episode-by-episode, which can't be matched to a show reliably.
-            ms: src.kind === 'm3u' && t === 'series' ? 'skip' : 'pending',
-            st: searchText(title),
-          });
-        }
-        // One statement saves the whole chunk. Rows whose content hash is unchanged are not rewritten.
-        const RESET =
-          '(vod_items.title IS NOT excluded.title OR (excluded.tmdb_id IS NOT NULL AND vod_items.tmdb_id IS NOT excluded.tmdb_id))';
-        const r = await env.DB.prepare(
-          `INSERT INTO vod_items(setup_id,source_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status,search_text)
-           SELECT ?1,?2,c.id,json_extract(j.value,'$.p'),c.media_type,json_extract(j.value,'$.title'),json_extract(j.value,'$.y'),
-                  json_extract(j.value,'$.img'),json_extract(j.value,'$.d'),json_extract(j.value,'$.pb'),json_extract(j.value,'$.h'),1,
-                  json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms'),json_extract(j.value,'$.st')
-           FROM json_each(?3) j
-           JOIN catalogs c ON c.setup_id=?1 AND c.source_id=?2 AND c.media_type=json_extract(j.value,'$.t') AND c.source_category_id=json_extract(j.value,'$.c')
-           WHERE true
-           ON CONFLICT(catalog_id,provider_item_id) DO UPDATE SET
-             title=excluded.title,year=excluded.year,poster_url=excluded.poster_url,overview=excluded.overview,
-             playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,
-             -- A renamed title (or a new provider TMDB ID) needs matching again; otherwise keep the match.
-             tmdb_match_status=CASE WHEN ${RESET} THEN excluded.tmdb_match_status ELSE vod_items.tmdb_match_status END,
-             tmdb_id=CASE WHEN ${RESET} THEN excluded.tmdb_id ELSE vod_items.tmdb_id END,
-             imdb_id=CASE WHEN ${RESET} THEN NULL ELSE vod_items.imdb_id END,
-             tmdb_poster=CASE WHEN ${RESET} THEN NULL ELSE vod_items.tmdb_poster END,
-             search_text=CASE WHEN ${RESET} OR vod_items.search_text IS NULL THEN excluded.search_text ELSE vod_items.search_text END
-           WHERE vod_items.content_hash IS NOT excluded.content_hash OR vod_items.is_available=0`,
-        )
-          .bind(setupId, sourceId, JSON.stringify(clean))
-          .run();
-        return json({ ok: true, written: r.meta.changes });
-      }
-
-      if (action === 'import/remove') {
-        const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n));
-        if (!ids.length || ids.length > 5000) return json({ error: 'Send between 1 and 5000 ids.' }, 400);
-        const r = await env.DB.prepare(
-          'UPDATE vod_items SET is_available=0 WHERE setup_id=?1 AND source_id=?2 AND is_available=1 AND id IN (SELECT value FROM json_each(?3))',
-        )
-          .bind(setupId, sourceId, JSON.stringify(ids))
-          .run();
-        return json({ ok: true, written: r.meta.changes });
-      }
-
-      if (action === 'import/finish') {
-        const status = body.error ? `Error · ${str(body.error, 180)}` : str(body.status, 200) || 'OK';
-        await env.DB.prepare(
-          `UPDATE sources SET last_refresh_status=?${body.error ? '' : ",last_refresh_at=datetime('now')"} WHERE id=?`,
-        )
-          .bind(hideSecrets(status, src.cfg), sourceId)
-          .run();
-        return json({ ok: true });
-      }
-    }
-    const patchSource = path.match(/^\/api\/sources\/([^/]+)$/);
-    if (method === 'PATCH' && patchSource) {
-      const src = await getSource(env, setupId, patchSource[1]);
-      const body = (await request.json()) as any;
-      const cfg = { ...src.cfg, userAgent: str(body.userAgent, 300) || undefined };
-      await env.DB.prepare('UPDATE sources SET encrypted_config=? WHERE id=?')
-        .bind(await encrypt(env, cfg), src.id)
-        .run();
-      return json({ ok: true });
-    }
-    const deleteMatch = path.match(/^\/api\/sources\/([^/]+)$/);
-    if (method === 'DELETE' && deleteMatch) {
-      const r = await env.DB.prepare('DELETE FROM sources WHERE id=? AND setup_id=?')
-        .bind(deleteMatch[1], setupId)
-        .run();
-      if (!r.meta.changes) return json({ error: 'Source not found.' }, 404);
-      return json({ ok: true });
-    }
-    const catalogMatch = path.match(/^\/api\/catalogs\/([^/]+)$/);
-    if (method === 'PATCH' && catalogMatch) {
-      const c = await env.DB.prepare('SELECT id FROM catalogs WHERE id=? AND setup_id=?')
-        .bind(catalogMatch[1], setupId)
-        .first();
-      if (!c) return json({ error: 'Catalog not found.' }, 404);
-      const body = (await request.json()) as any;
-      const sets: string[] = [];
-      const values: any[] = [];
-      if (typeof body.display_name === 'string') {
-        const name = body.display_name.trim().slice(0, 150);
-        if (!name) return json({ error: 'Catalog name cannot be empty.' }, 400);
-        sets.push('display_name=?');
-        values.push(name);
-      }
-      if (typeof body.is_hidden === 'boolean') {
-        sets.push('is_hidden=?');
-        values.push(body.is_hidden ? 1 : 0);
-      }
-      if (!sets.length) return json({ error: 'No supported changes supplied.' }, 400);
-      sets.push("updated_at=datetime('now')");
-      values.push(catalogMatch[1], setupId);
-      await env.DB.prepare(`UPDATE catalogs SET ${sets.join(',')} WHERE id=? AND setup_id=?`)
-        .bind(...values)
-        .run();
-      return json({ ok: true });
-    }
-    if (method === 'POST' && path === '/api/catalog-order') {
-      const body = (await request.json()) as { ids?: string[] };
-      if (!Array.isArray(body.ids) || body.ids.length > 2000)
-        return json({ error: 'Invalid catalog order.' }, 400);
-      const rows = await env.DB.prepare('SELECT id FROM catalogs WHERE setup_id=?')
-        .bind(setupId)
-        .all<{ id: string }>();
-      const allowed = new Set(rows.results.map((r) => r.id));
-      if (
-        body.ids.some((id) => !allowed.has(id)) ||
-        new Set(body.ids).size !== body.ids.length ||
-        body.ids.length !== allowed.size
-      )
-        return json({ error: 'Order must contain every catalog exactly once.' }, 400);
-      await env.DB.prepare(
-        "UPDATE catalogs SET sort_order=o.key,updated_at=datetime('now') FROM (SELECT key,value FROM json_each(?1)) o WHERE catalogs.id=o.value AND catalogs.setup_id=?2 AND catalogs.sort_order IS NOT o.key",
-      )
-        .bind(JSON.stringify(body.ids), setupId)
-        .run();
-      return json({ ok: true });
-    }
-    if (path === '/api/tmdb/key' && method === 'POST') {
-      const body = (await request.json()) as { apiKey?: string };
-      const apiKey = String(body.apiKey || '').trim();
-      if (!/^[a-f0-9]{32}$/i.test(apiKey))
-        return json({ error: 'TMDB v3 API key should be a 32-character hexadecimal key.' }, 400);
-      const testUrl = new URL(tmdbBase(env) + '/configuration');
-      testUrl.searchParams.set('api_key', apiKey);
-      const test = await fetch(testUrl.toString(), {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!test.ok)
-        return json({ error: 'TMDB rejected this key. Check the key in your TMDB API settings.' }, 400);
-      await env.DB.prepare(
-        "INSERT INTO setup_secrets(setup_id,secret_name,encrypted_value,updated_at) VALUES(?,?,?,datetime('now')) ON CONFLICT(setup_id,secret_name) DO UPDATE SET encrypted_value=excluded.encrypted_value,updated_at=datetime('now')",
-      )
-        .bind(setupId, 'tmdb_api_key', await encrypt(env, { apiKey }))
-        .run();
-      return json({ ok: true, configured: true });
-    }
-    if (path === '/api/tmdb/key' && method === 'DELETE') {
-      await env.DB.prepare('DELETE FROM setup_secrets WHERE setup_id=? AND secret_name=?')
-        .bind(setupId, 'tmdb_api_key')
-        .run();
-      return json({ ok: true, configured: false });
-    }
-    if (path === '/api/tmdb/status' && method === 'GET') {
-      const [key, counts] = await Promise.all([
-        env.DB.prepare('SELECT 1 AS k FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').first(),
-        env.DB.prepare(
-          'SELECT tmdb_match_status AS s,COUNT(*) AS n,SUM(imdb_id IS NOT NULL) AS imdb FROM vod_items WHERE setup_id=? AND is_available=1 GROUP BY tmdb_match_status',
-        )
-          .bind(setupId)
-          .all<{ s: string; n: number; imdb: number }>(),
-      ]);
-      const by = Object.fromEntries(counts.results.map((r) => [r.s, r.n]));
-      return json({
-        configured: !!key,
-        pending: by.pending || 0,
-        matched: by.matched || 0,
-        unmatched: (by.unmatched || 0) + (by.error || 0),
-        withImdb: counts.results.reduce((n, r) => n + (r.imdb || 0), 0),
-        batch: MATCH_BATCH,
-      });
-    }
-    if (path === '/api/tmdb/pending' && method === 'GET') {
-      // IDs still waiting for a TMDB match, in pages, so the browser can hand them out in small batches.
-      const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
-      const rows = await env.DB.prepare(
-        "SELECT id FROM vod_items WHERE setup_id=? AND tmdb_match_status='pending' AND is_available=1 AND id>? ORDER BY id LIMIT 5000",
-      )
-        .bind(setupId, after)
-        .raw<[number]>();
-      const ids = rows.map((r) => r[0]);
-      return json({ ids, next: ids.length === 5000 ? ids[ids.length - 1] : null });
-    }
-    if (path === '/api/tmdb/match' && method === 'POST') {
-      const body = (await request.json()) as { ids?: unknown[] };
-      const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n): n is number => Number.isInteger(n)).slice(0, MATCH_BATCH);
-      if (!ids.length) return json({ error: 'No titles to match.' }, 400);
-      return matchBatch(env, setupId, ids);
-    }
-    if (path === '/api/tmdb/retry' && method === 'POST') {
-      // Give titles that didn't match another go (e.g. after the matcher improves).
-      const r = await env.DB.prepare(
-        "UPDATE vod_items SET tmdb_match_status='pending' WHERE setup_id=? AND tmdb_match_status IN ('unmatched','error') AND is_available=1",
-      )
-        .bind(setupId)
-        .run();
-      return json({ ok: true, reset: r.meta.changes });
-    }
-    if (method === 'POST' && path === '/api/recovery-code/rotate') {
-      const recoveryCode = randomCode();
-      await env.DB.prepare("UPDATE setups SET recovery_hash=?,updated_at=datetime('now') WHERE id=?")
-        .bind(await sha(recoveryCode), setupId)
-        .run();
-      return json({ ok: true, recoveryCode });
-    }
-    return json({ error: 'API route not found.' }, 404);
+  if (method === 'GET' && path === '/api/state') {
+    const setup = await env.DB.prepare('SELECT addon_token_encrypted FROM setups WHERE id=?').bind(setupId).first<any>();
+    const lib = await getLibrary(env, setupId);
+    const [login, catalogs, tmdbKey] = lib
+      ? await Promise.all([
+          getLogin(env, setupId, lib.id),
+          catalogsFor(env, setupId, lib.id),
+          lib.isOwner
+            ? env.DB.prepare('SELECT 1 AS k FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').first()
+            : null,
+        ])
+      : [null, [], null];
+    let addonToken = '';
+    try {
+      addonToken = (await decrypt<{ token: string }>(env, setup.addon_token_encrypted)).token;
+    } catch {}
+    let inviteUrl: string | null = null;
+    if (lib?.isOwner && lib.invite_encrypted)
+      try {
+        inviteUrl = `${url.origin}/?invite=${encodeURIComponent((await decrypt<{ code: string }>(env, lib.invite_encrypted)).code)}`;
+      } catch {}
+    return json({
+      role: lib ? (lib.isOwner ? 'owner' : 'member') : 'new',
+      library: lib
+        ? {
+            name: lib.name,
+            kind: lib.kind,
+            lastRefreshAt: lib.last_refresh_at,
+            status: lib.last_refresh_status,
+            stats: lib.stats_json ? JSON.parse(lib.stats_json) : null,
+          }
+        : null,
+      login: login
+        ? { baseUrl: login.baseUrl, username: login.username, userAgent: login.userAgent || '', hasPlaylist: !!login.playlistUrl }
+        : null,
+      catalogs,
+      inviteUrl,
+      tmdbConfigured: !!tmdbKey,
+      relayConfigured: !!relayBase(env),
+      addonUrl: addonToken ? `${url.origin}/addon/${addonToken}/manifest.json` : null,
+    });
   }
-  if (path.startsWith('/addon/')) {
-    const res = await handleAddon(env, path);
-    if (res) return res;
+
+  if (method === 'GET' && path === '/api/relay/wake') return json(await wakeRelay(env));
+
+  // ---- the owner's library ----
+  if (method === 'POST' && path === '/api/library') {
+    // Create the library (first time) or update the owner's own login and the library name.
+    const lib = await getLibrary(env, setupId);
+    if (lib && !lib.isOwner) return json({ error: 'You joined a shared library. Update your login on the My login page.' }, 403);
+    const kind = (lib?.kind || body.kind) as SourceKind;
+    if (!['xtream', 'm3u'].includes(kind)) return json({ error: 'Choose Xtream Codes or M3U playlist.' }, 400);
+    const name = str(body.name, 100) || lib?.name || 'My provider';
+    const cfg = await readLogin(env, kind, body, false);
+    const id = lib?.id || uuid();
+    if (lib) await env.DB.prepare('UPDATE libraries SET name=? WHERE id=?').bind(name, id).run();
+    else
+      await env.DB.batch([
+        env.DB.prepare('INSERT INTO libraries(id,owner_setup_id,name,kind) VALUES(?,?,?,?)').bind(id, setupId, name, kind),
+        env.DB.prepare('UPDATE setups SET library_id=? WHERE id=?').bind(id, setupId),
+      ]);
+    await saveLogin(env, setupId, id, cfg);
+    return json({ ok: true, kind });
   }
-  return json({ error: 'Not found.' }, 404);
+  if (method === 'DELETE' && path === '/api/library') {
+    const lib = await ownedLibrary(env, setupId);
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM search_terms WHERE term >= ?1 AND term < ?2`).bind(lib.id.slice(0, 8) + ' ', lib.id.slice(0, 8) + '~'),
+      env.DB.prepare('DELETE FROM vod_items WHERE library_id=?').bind(lib.id),
+      env.DB.prepare('DELETE FROM catalog_prefs WHERE catalog_id IN (SELECT id FROM catalogs WHERE library_id=?)').bind(lib.id),
+      env.DB.prepare('DELETE FROM catalogs WHERE library_id=?').bind(lib.id),
+      env.DB.prepare('DELETE FROM logins WHERE library_id=?').bind(lib.id),
+      env.DB.prepare('UPDATE setups SET library_id=NULL WHERE library_id=?').bind(lib.id),
+      env.DB.prepare('DELETE FROM libraries WHERE id=?').bind(lib.id),
+    ]);
+    return json({ ok: true });
+  }
+  if (method === 'POST' && path === '/api/library/invite') {
+    // A new invite link; the previous one stops working. People who already joined are unaffected.
+    const lib = await ownedLibrary(env, setupId);
+    const code = b64(crypto.getRandomValues(new Uint8Array(18)));
+    await env.DB.prepare('UPDATE libraries SET invite_hash=?,invite_encrypted=? WHERE id=?')
+      .bind(await sha(code), await encrypt(env, { code }), lib.id)
+      .run();
+    return json({ ok: true, inviteUrl: `${url.origin}/?invite=${encodeURIComponent(code)}` });
+  }
+
+  // ---- everyone: their own login ----
+  if ((method === 'POST' || method === 'PATCH') && path === '/api/login') {
+    const lib = await getLibrary(env, setupId);
+    if (!lib) return json({ error: 'Set up or join a library first.' }, 400);
+    let cfg: SourceConfig;
+    if (method === 'PATCH') {
+      // Only the User-Agent changes.
+      const old = await getLogin(env, setupId, lib.id);
+      if (!old) return json({ error: 'Save your login first.' }, 400);
+      cfg = { ...old, userAgent: str(body.userAgent, 300) || undefined };
+    } else cfg = await readLogin(env, lib.kind, body, lib.kind === 'xtream');
+    await saveLogin(env, setupId, lib.id, cfg);
+    return json({ ok: true });
+  }
+
+  // ---- import (owner only; the browser does the parsing, see client-import.ts) ----
+  if (method === 'GET' && path === '/api/library/provider') return proxyProvider(env, setupId, url.searchParams.get('part') || '');
+  if (method === 'GET' && path === '/api/library/index') {
+    // What the library already holds, so the browser only sends new/changed titles.
+    const lib = await ownedLibrary(env, setupId);
+    const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
+    const rows = await env.DB.prepare(
+      `SELECT v.id,v.media_type,c.source_category_id,v.provider_item_id,v.content_hash,v.is_available
+       FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id WHERE v.id>? AND v.library_id=? ORDER BY v.id LIMIT 5000`,
+    )
+      .bind(after, lib.id)
+      .raw<[number, string, string, string, string, number]>();
+    return json({ rows, next: rows.length === 5000 ? rows[rows.length - 1][0] : null });
+  }
+  if (method === 'POST' && path === '/api/library/import/catalogs') {
+    const lib = await ownedLibrary(env, setupId);
+    const list = Array.isArray(body.catalogs) ? body.catalogs : [];
+    if (!list.length || list.length > 1000) return json({ error: 'Send between 1 and 1000 categories.' }, 400);
+    const clean: { t: MediaType; c: string; n: string }[] = [];
+    for (const x of list) {
+      const t = mediaTypeOf(x?.t);
+      const c = str(x?.c, 200);
+      if (t && c) clean.push({ t, c, n: str(x?.n, 150) || c });
+    }
+    const top = await env.DB.prepare('SELECT COALESCE(MAX(sort_order),-1) AS m FROM catalogs WHERE library_id=?').bind(lib.id).first<{ m: number }>();
+    const r = await env.DB.prepare(
+      `INSERT INTO catalogs(library_id,source_category_id,source_category_name,media_type,sort_order)
+       SELECT ?1,json_extract(j.value,'$.c'),json_extract(j.value,'$.n'),json_extract(j.value,'$.t'),?3+1+j.key
+       FROM json_each(?2) j WHERE true
+       ON CONFLICT(library_id,media_type,source_category_id) DO UPDATE SET source_category_name=excluded.source_category_name
+       WHERE catalogs.source_category_name IS NOT excluded.source_category_name`,
+    )
+      .bind(lib.id, JSON.stringify(clean), top?.m ?? -1)
+      .run();
+    return json({ ok: true, written: r.meta.changes });
+  }
+  if (method === 'POST' && path === '/api/library/import/items') {
+    const lib = await ownedLibrary(env, setupId);
+    const list = Array.isArray(body.items) ? body.items : [];
+    if (!list.length || list.length > 500) return json({ error: 'Send between 1 and 500 titles.' }, 400);
+    const cfg = lib.kind === 'm3u' ? await getLogin(env, setupId, lib.id) : null;
+    const clean = [];
+    for (const x of list) {
+      const t = mediaTypeOf(x?.t);
+      const c = str(x?.c, 200);
+      const p = str(x?.p, 200);
+      const title = str(x?.title, 300);
+      if (!t || !c || !p || !title) continue;
+      let pb: string | null = null;
+      const rawPb = str(x?.pb, 2000);
+      if (lib.kind === 'xtream' && /^xt:[a-z0-9]{1,8}$/i.test(rawPb)) pb = rawPb;
+      if (lib.kind === 'm3u' && cfg && /^https?:\/\//i.test(rawPb)) pb = m3uStoredRef(rawPb, cfg);
+      const y = Number(x?.y);
+      clean.push({
+        t,
+        c,
+        p,
+        title,
+        y: Number.isInteger(y) && y > 1880 && y < 2200 ? y : null,
+        img: optHttp(x?.img),
+        d: optStr(x?.d, 2000),
+        pb,
+        h: str(x?.h, 32),
+        tm: Number.isInteger(Number(x?.tm)) && Number(x?.tm) > 0 ? Number(x.tm) : null,
+        // M3U lists series episode-by-episode, which can't be matched to a show reliably.
+        ms: lib.kind === 'm3u' && t === 'series' ? 'skip' : 'pending',
+      });
+    }
+    const items = JSON.stringify(clean);
+    // A renamed title (or a new provider TMDB ID) needs matching again; otherwise keep the match.
+    const RESET = '(vod_items.title IS NOT excluded.title OR (excluded.tmdb_id IS NOT NULL AND vod_items.tmdb_id IS NOT excluded.tmdb_id))';
+    // CROSS JOIN keeps json_each as the outer loop, so each title costs one indexed category lookup.
+    const JOIN = `FROM json_each(?2) j CROSS JOIN catalogs c
+      ON c.library_id=?1 AND c.media_type=json_extract(j.value,'$.t') AND c.source_category_id=json_extract(j.value,'$.c')`;
+    const r = await env.DB.prepare(
+      `INSERT INTO vod_items(library_id,catalog_id,provider_item_id,media_type,title,year,poster_url,overview,playback_ref,content_hash,is_available,tmdb_id,tmdb_match_status)
+       SELECT ?1,c.id,json_extract(j.value,'$.p'),c.media_type,json_extract(j.value,'$.title'),json_extract(j.value,'$.y'),
+              json_extract(j.value,'$.img'),json_extract(j.value,'$.d'),json_extract(j.value,'$.pb'),json_extract(j.value,'$.h'),1,
+              json_extract(j.value,'$.tm'),json_extract(j.value,'$.ms')
+       ${JOIN} WHERE true
+       ON CONFLICT(catalog_id,provider_item_id) DO UPDATE SET
+         title=excluded.title,year=excluded.year,poster_url=excluded.poster_url,overview=excluded.overview,
+         playback_ref=excluded.playback_ref,content_hash=excluded.content_hash,is_available=1,
+         tmdb_match_status=CASE WHEN ${RESET} THEN excluded.tmdb_match_status ELSE vod_items.tmdb_match_status END,
+         tmdb_id=CASE WHEN ${RESET} THEN excluded.tmdb_id ELSE vod_items.tmdb_id END,
+         imdb_id=CASE WHEN ${RESET} THEN NULL ELSE vod_items.imdb_id END,
+         tmdb_poster=CASE WHEN ${RESET} THEN NULL ELSE vod_items.tmdb_poster END
+       WHERE vod_items.content_hash IS NOT excluded.content_hash OR vod_items.is_available=0`,
+    )
+      .bind(lib.id, items)
+      .run();
+    // Search terms for these titles (one indexed lookup per title to find its id).
+    const saved = await env.DB.prepare(
+      `SELECT v.id,v.title ${JOIN} CROSS JOIN vod_items v ON v.catalog_id=c.id AND v.provider_item_id=json_extract(j.value,'$.p')`,
+    )
+      .bind(lib.id, items)
+      .raw<[number, string]>();
+    const terms = saved.flatMap(([id, title]) => searchTerms(lib.id, title).map((t) => [t, id]));
+    if (terms.length)
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO search_terms(term,item_id) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)",
+      )
+        .bind(JSON.stringify(terms))
+        .run();
+    return json({ ok: true, written: r.meta.changes });
+  }
+  if (method === 'POST' && path === '/api/library/import/remove') {
+    const lib = await ownedLibrary(env, setupId);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n));
+    if (!ids.length || ids.length > 5000) return json({ error: 'Send between 1 and 5000 ids.' }, 400);
+    const r = await env.DB.prepare(
+      'UPDATE vod_items SET is_available=0 WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?1 AND is_available=1',
+    )
+      .bind(lib.id, JSON.stringify(ids))
+      .run();
+    return json({ ok: true, written: r.meta.changes });
+  }
+  if (method === 'POST' && path === '/api/library/import/finish') {
+    const lib = await ownedLibrary(env, setupId);
+    const cfg = (await getLogin(env, setupId, lib.id)) || {};
+    if (body.error) {
+      await env.DB.prepare('UPDATE libraries SET last_refresh_status=? WHERE id=?')
+        .bind(hideSecrets(`Error · ${str(body.error, 180)}`, cfg), lib.id)
+        .run();
+      return json({ ok: true });
+    }
+    // Store per-category counts once here, so pages never have to count titles.
+    await env.DB.prepare(
+      `UPDATE catalogs SET item_count=n.cnt FROM (SELECT catalog_id,COUNT(*) AS cnt FROM vod_items WHERE library_id=?1 AND is_available=1 GROUP BY catalog_id) n
+       WHERE catalogs.id=n.catalog_id AND catalogs.item_count IS NOT n.cnt`,
+    )
+      .bind(lib.id)
+      .run();
+    await env.DB.prepare(
+      'UPDATE catalogs SET item_count=0 WHERE library_id=?1 AND item_count>0 AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)',
+    )
+      .bind(lib.id)
+      .run();
+    await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
+      .bind(str(body.status, 200) || 'OK', lib.id)
+      .run();
+    return json({ ok: true, stats: await libraryStats(env, lib.id) });
+  }
+
+  // ---- everyone: their own rows ----
+  const catalogMatch = path.match(/^\/api\/catalogs\/(\d+)$/);
+  if (method === 'PATCH' && catalogMatch) {
+    const lib = await getLibrary(env, setupId);
+    const cat = lib
+      ? await env.DB.prepare('SELECT id FROM catalogs WHERE id=? AND library_id=?').bind(Number(catalogMatch[1]), lib.id).first()
+      : null;
+    if (!cat) return json({ error: 'Catalog not found.' }, 404);
+    const name = typeof body.display_name === 'string' ? body.display_name.trim().slice(0, 150) : undefined;
+    const hidden = typeof body.is_hidden === 'boolean' ? (body.is_hidden ? 1 : 0) : undefined;
+    if (name === undefined && hidden === undefined) return json({ error: 'No supported changes supplied.' }, 400);
+    await env.DB.prepare(
+      `INSERT INTO catalog_prefs(setup_id,catalog_id,display_name,is_hidden) VALUES(?1,?2,?3,?4)
+       ON CONFLICT(setup_id,catalog_id) DO UPDATE SET
+         display_name=CASE WHEN ?5 THEN excluded.display_name ELSE catalog_prefs.display_name END,
+         is_hidden=CASE WHEN ?6 THEN excluded.is_hidden ELSE catalog_prefs.is_hidden END`,
+    )
+      .bind(setupId, Number(catalogMatch[1]), name || null, hidden ?? null, name !== undefined ? 1 : 0, hidden !== undefined ? 1 : 0)
+      .run();
+    return json({ ok: true });
+  }
+  if (method === 'POST' && path === '/api/catalogs/bulk') {
+    // Show or hide many rows at once (one statement).
+    const lib = await getLibrary(env, setupId);
+    if (!lib) return json({ error: 'No library yet.' }, 400);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n)).slice(0, 2000);
+    if (!ids.length || typeof body.is_hidden !== 'boolean') return json({ error: 'Send ids and is_hidden.' }, 400);
+    await env.DB.prepare(
+      `INSERT INTO catalog_prefs(setup_id,catalog_id,is_hidden)
+       SELECT ?1,c.id,?3 FROM json_each(?2) j CROSS JOIN catalogs c ON c.id=j.value AND c.library_id=?4 WHERE true
+       ON CONFLICT(setup_id,catalog_id) DO UPDATE SET is_hidden=excluded.is_hidden`,
+    )
+      .bind(setupId, JSON.stringify(ids), body.is_hidden ? 1 : 0, lib.id)
+      .run();
+    return json({ ok: true });
+  }
+  if (method === 'POST' && path === '/api/catalog-order') {
+    // Reuse the current order values in the new sequence, so moving one row writes only the rows that moved.
+    const lib = await getLibrary(env, setupId);
+    if (!lib) return json({ error: 'No library yet.' }, 400);
+    const current = await catalogsFor(env, setupId, lib.id);
+    const ids: unknown[] = Array.isArray(body.ids) ? body.ids : [];
+    const byId = new Map(current.map((c) => [c.id, c]));
+    if (ids.length !== current.length || new Set(ids).size !== ids.length || ids.some((i) => !byId.has(Number(i))))
+      return json({ error: 'Order must contain every catalog exactly once.' }, 400);
+    const values = current.map((c) => c.order).sort((a, b) => a - b);
+    const changes = ids
+      .map((i, pos) => ({ id: Number(i), order: values[pos] }))
+      .filter((x) => byId.get(x.id)!.order !== x.order);
+    if (changes.length)
+      await env.DB.prepare(
+        `INSERT INTO catalog_prefs(setup_id,catalog_id,sort_order)
+         SELECT ?1,json_extract(value,'$.id'),json_extract(value,'$.order') FROM json_each(?2) WHERE true
+         ON CONFLICT(setup_id,catalog_id) DO UPDATE SET sort_order=excluded.sort_order`,
+      )
+        .bind(setupId, JSON.stringify(changes))
+        .run();
+    return json({ ok: true, changed: changes.length });
+  }
+
+  // ---- TMDB matching (owner only; matches are shared with everyone in the library) ----
+  if (path === '/api/tmdb/key' && method === 'POST') {
+    await ownedLibrary(env, setupId);
+    const apiKey = str(body.apiKey, 64);
+    if (!/^[a-f0-9]{32}$/i.test(apiKey)) return json({ error: 'TMDB v3 API key should be a 32-character hexadecimal key.' }, 400);
+    const testUrl = new URL(tmdbBase(env) + '/configuration');
+    testUrl.searchParams.set('api_key', apiKey);
+    const test = await fetch(testUrl.toString(), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(12000) });
+    if (!test.ok) return json({ error: 'TMDB rejected this key. Check the key in your TMDB API settings.' }, 400);
+    await env.DB.prepare(
+      "INSERT INTO setup_secrets(setup_id,secret_name,encrypted_value) VALUES(?,?,?) ON CONFLICT(setup_id,secret_name) DO UPDATE SET encrypted_value=excluded.encrypted_value,updated_at=datetime('now')",
+    )
+      .bind(setupId, 'tmdb_api_key', await encrypt(env, { apiKey }))
+      .run();
+    return json({ ok: true, configured: true });
+  }
+  if (path === '/api/tmdb/key' && method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').run();
+    return json({ ok: true, configured: false });
+  }
+  if (path === '/api/tmdb/status' && method === 'GET') {
+    const lib = await ownedLibrary(env, setupId);
+    const key = await env.DB.prepare('SELECT 1 AS k FROM setup_secrets WHERE setup_id=? AND secret_name=?').bind(setupId, 'tmdb_api_key').first();
+    const stats = lib.stats_json ? JSON.parse(lib.stats_json) : { total: 0, pending: 0, matched: 0, unmatched: 0, withImdb: 0 };
+    return json({ configured: !!key, ...stats, batch: MATCH_BATCH });
+  }
+  if (path === '/api/tmdb/stats' && method === 'POST') {
+    // Recount after a matching run (one read of the library, then stored).
+    const lib = await ownedLibrary(env, setupId);
+    return json(await libraryStats(env, lib.id));
+  }
+  if (path === '/api/tmdb/pending' && method === 'GET') {
+    const lib = await ownedLibrary(env, setupId);
+    const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
+    const rows = await env.DB.prepare(
+      "SELECT id FROM vod_items WHERE id>? AND library_id=? AND tmdb_match_status='pending' AND is_available=1 ORDER BY id LIMIT 5000",
+    )
+      .bind(after, lib.id)
+      .raw<[number]>();
+    const ids = rows.map((r) => r[0]);
+    return json({ ids, next: ids.length === 5000 ? ids[ids.length - 1] : null });
+  }
+  if (path === '/api/tmdb/match' && method === 'POST') {
+    const lib = await ownedLibrary(env, setupId);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown): n is number => Number.isInteger(n)).slice(0, MATCH_BATCH);
+    if (!ids.length) return json({ error: 'No titles to match.' }, 400);
+    return matchBatch(env, setupId, lib.id, ids);
+  }
+  if (path === '/api/tmdb/retry' && method === 'POST') {
+    const lib = await ownedLibrary(env, setupId);
+    const r = await env.DB.prepare(
+      "UPDATE vod_items SET tmdb_match_status='pending' WHERE library_id=? AND tmdb_match_status IN ('unmatched','error') AND is_available=1",
+    )
+      .bind(lib.id)
+      .run();
+    await libraryStats(env, lib.id);
+    return json({ ok: true, reset: r.meta.changes });
+  }
+
+  if (method === 'POST' && path === '/api/recovery-code/rotate') {
+    const recoveryCode = randomCode();
+    await env.DB.prepare("UPDATE setups SET recovery_hash=?,updated_at=datetime('now') WHERE id=?").bind(await sha(recoveryCode), setupId).run();
+    return json({ ok: true, recoveryCode });
+  }
+  return json({ error: 'API route not found.' }, 404);
 }
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     let res: Response;
     try {
-      res = await route(request, env);
+      res = await route(request, { ...env, DB: env.DB || getDb(env.TURSO_URL, env.TURSO_TOKEN) });
     } catch (e) {
       res = responseError(e);
     }

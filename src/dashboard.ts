@@ -1,45 +1,347 @@
+// The dashboard page: one HTML document with inline styles and two scripts
+// (the importer from client-import.ts, and the page logic below).
+// Both scripts are plain JS inside String.raw, so they contain no backticks or dollar-brace sequences.
 import { CLIENT_IMPORT_JS } from './client-import';
 
-export function dashboard() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VODStack</title><style>
+const CSS = String.raw`
 :root{color-scheme:dark;--bg:#0b0e14;--panel:#131925;--panel2:#192131;--line:#283246;--muted:#9aa8bc;--text:#f3f6fb;--accent:#9aafff;--red:#ff8585;--green:#89e0b4}*{box-sizing:border-box}body{margin:0;background:radial-gradient(900px 500px at 90% -20%,#24365a 0%,transparent 60%),var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:10px 14px;border-radius:10px;font-weight:650}button.primary{background:var(--accent);color:#101522;border-color:transparent}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:wait}input,select{width:100%;border:1px solid var(--line);background:#0c111a;color:var(--text);border-radius:9px;padding:11px 12px;outline:none}input:focus,select:focus{border-color:var(--accent)}label{display:block;color:var(--muted);font-size:13px;margin:10px 0 6px}.app{max-width:1120px;margin:auto;padding:30px 20px 70px}.top{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:28px}.brand{display:flex;align-items:center;gap:12px}.logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(140deg,#a8b9ff,#6579d8);color:#0b1020;display:grid;place-items:center;font-size:22px;font-weight:900}.eyebrow{font-size:11px;color:var(--accent);font-weight:800;letter-spacing:.14em;text-transform:uppercase}.title{font-size:28px;line-height:1.15;margin:2px 0 0;letter-spacing:-.04em}.muted{color:var(--muted)}.layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:20px}.side,.panel{border:1px solid var(--line);border-radius:16px;background:rgba(19,25,37,.92)}.side{padding:13px;height:max-content}.nav{width:100%;text-align:left;background:transparent;border-color:transparent;color:var(--muted);margin:2px 0}.nav.active{background:var(--panel2);color:var(--text);border-color:var(--line)}.side-note{border-top:1px solid var(--line);margin-top:12px;padding:14px 8px 4px;font-size:12px;color:var(--muted)}.content{min-width:0}.page-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.page-head h2{margin:0;font-size:22px;letter-spacing:-.03em}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px}.stat{border:1px solid var(--line);border-radius:14px;padding:16px;background:var(--panel)}.stat strong{display:block;font-size:27px;letter-spacing:-.04em}.stat span{color:var(--muted);font-size:12px}.panel{padding:18px;margin-bottom:16px}.panel h3{margin:0 0 4px;font-size:16px}.panel p{margin:4px 0 14px;color:var(--muted);font-size:13px}.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.wide{grid-column:1/-1}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.catalog{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--line)}.catalog:last-child{border-bottom:0}.catalog-title{font-weight:700;overflow-wrap:anywhere}.meta{font-size:12px;color:var(--muted);margin-top:3px}.catalog-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.small{padding:7px 9px;font-size:12px}.pill{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:11px;color:var(--muted);margin-right:6px}.hidden{opacity:.6}.notice{border:1px solid #3a4c72;background:#17233b;border-radius:12px;padding:12px 14px;color:#c8d6ff;font-size:13px;margin-bottom:16px}.error{color:var(--red);font-size:13px;margin-top:10px}.success{color:var(--green);font-size:13px;margin-top:10px}.empty{text-align:center;padding:38px 12px;color:var(--muted)}.empty strong{display:block;color:var(--text);font-size:17px;margin-bottom:4px}.code{font:700 18px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;word-break:break-word}.divider{border:0;border-top:1px solid var(--line);margin:16px 0}.row{display:flex;gap:10px;align-items:center}.row>*{flex:1}.switch{width:auto}.help{font-size:12px;color:var(--muted)}@media(max-width:760px){.layout{grid-template-columns:1fr}.side{display:flex;gap:5px;overflow:auto}.nav{white-space:nowrap;width:auto}.side-note{display:none}.cards{grid-template-columns:repeat(3,minmax(0,1fr))}.stat{padding:12px}.stat strong{font-size:22px}.formgrid{grid-template-columns:1fr}.wide{grid-column:auto}.top{align-items:flex-start}.catalog{grid-template-columns:1fr}.catalog-actions{justify-content:flex-start}.title{font-size:24px}}
-</style></head><body><div class="app"><header class="top"><div class="brand"><div class="logo">VS</div><div><div class="eyebrow">VODSTACK · IPTV TOOLS</div><h1 class="title">VODStack</h1></div></div><div id="topAction"></div></header><main id="root"><div class="empty">Loading…</div></main></div><script>${CLIENT_IMPORT_JS}</script><script>
-const root=document.querySelector('#root');let state={setup:false,tab:'catalogs',catalogs:[],sources:[],summary:{}};
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,opts={}){const r=await fetch(path,{credentials:'same-origin',...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});let data={};try{data=await r.json()}catch{}if(!r.ok)throw Error(data.error||'Request failed');return data}
-function msg(text,kind='error'){const el=document.querySelector('#msg');if(el){el.className=kind;el.textContent=text}}
-async function matchAfter(r,show){const note=r.withTmdb?' '+r.withTmdb.toLocaleString()+' came with TMDB IDs from the provider.':'';try{const m=await VODImport.match(t=>show(t,'success'));if(m.skipped)return note+' Add a TMDB key in Setup & security for full metadata.';return note+(m.total?' TMDB matched '+m.matched.toLocaleString()+' of '+m.total.toLocaleString()+' titles.':'')}catch(e){return note+' TMDB matching stopped: '+e.message+' (use "Match titles now" in Setup & security to continue)'}}
-function tmdbStatusText(d){if(!d.configured)return 'No TMDB key saved yet.';return 'Key saved. '+d.matched.toLocaleString()+' titles matched ('+d.withImdb.toLocaleString()+' with IMDb IDs, so Nuvio shows full metadata), '+d.pending.toLocaleString()+' waiting, '+d.unmatched.toLocaleString()+' not found.'}
-function msg2(text,kind='error'){const el=document.querySelector('#msg2');if(el){el.className=kind;el.textContent=text}}
-function field(label,name,type='text',placeholder='',required=true){return \`<div><label>\${label}</label><input name="\${name}" type="\${type}" placeholder="\${placeholder}" \${required?'required':''} autocomplete="off"></div>\`}
-function renderWelcome(){document.querySelector('#topAction').innerHTML='';root.innerHTML=\`<div class="notice">Create a private setup to organize your IPTV provider’s Movies and Series groups. Your recovery code lets you return later and edit the same setup.</div><div class="panel"><div class="eyebrow">WELCOME</div><h2>Manage your VOD catalogs</h2><p>Start a new setup, or use an existing recovery code to continue.</p><div class="formgrid"><div class="wide"><label>Existing recovery code</label><input id="recoverCode" placeholder="VOD-XXXXXX-XXXXXX-XXXXXX-XXXXXX" autocomplete="off"></div></div><div class="actions"><button class="primary" id="recoverBtn">Recover existing setup</button><button id="newBtn">Create new setup</button></div><div id="msg"></div><hr class="divider"><div class="help">Recovery codes grant access to the setup. Store yours privately. If you lose it, we cannot recover it for you.</div></div>\`;
- document.querySelector('#recoverBtn').onclick=async()=>{try{const code=document.querySelector('#recoverCode').value.trim();if(!code)throw Error('Enter your recovery code.');await api('/api/recover',{method:'POST',body:JSON.stringify({code})});await load()}catch(e){msg(e.message)}};
- document.querySelector('#newBtn').onclick=async()=>{try{const d=await api('/api/setup',{method:'POST',body:'{}'});state.recoveryCode=d.recoveryCode;await load();root.insertAdjacentHTML('afterbegin',\`<div class="notice"><strong>Save your recovery code now.</strong><div class="code" id="recoveryValue">\${esc(d.recoveryCode)}</div><div class="actions"><button id="copyCode">Copy recovery code</button></div><div class="help">It is shown only once. Save it somewhere safe before adding provider details.</div></div>\`);document.querySelector('#copyCode').onclick=()=>navigator.clipboard.writeText(d.recoveryCode).then(()=>msg('Recovery code copied.','success'));}catch(e){msg(e.message)}};
-}
-function render(){document.querySelector('#topAction').innerHTML=state.setup?'<button id="logout">Lock setup</button>':'';if(!state.setup){renderWelcome();return}const total=state.catalogs.reduce((n,c)=>n+(c.item_count||0),0);const visible=state.catalogs.filter(c=>!c.is_hidden).length;root.innerHTML=\`<div class="layout"><aside class="side"><button class="nav \${state.tab==='catalogs'?'active':''}" data-tab="catalogs">▦ &nbsp;Catalogs</button><button class="nav \${state.tab==='sources'?'active':''}" data-tab="sources">⇄ &nbsp;Sources</button><button class="nav \${state.tab==='settings'?'active':''}" data-tab="settings">⚙ &nbsp;Setup & security</button><div class="side-note">VOD only<br>Movies & Series<br><br>Provider credentials are encrypted server-side.</div></aside><section class="content">\${state.tab==='catalogs'?catalogsPage(total,visible):state.tab==='sources'?sourcesPage():settingsPage()}</section></div>\`;
- document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;render()});document.querySelector('#logout').onclick=async()=>{await api('/api/logout',{method:'POST',body:'{}'});state.setup=false;render()};wirePage();}
-function catalogsPage(total,visible){return \`<div class="page-head"><div><h2>Your catalogs</h2><div class="muted">Edit the provider groups that appear in Nuvio.</div></div><button class="primary" id="addSourceTop">+ Import source</button></div><div class="cards"><div class="stat"><strong>\${state.catalogs.length}</strong><span>Catalogs</span></div><div class="stat"><strong>\${visible}</strong><span>Visible</span></div><div class="stat"><strong>\${total.toLocaleString()}</strong><span>Items imported</span></div></div><div class="notice">Provider groups are retained. Rename and visibility settings are stored separately, so refreshing a source will not reset them.</div><div class="panel"><div class="row"><div><h3>All catalogs</h3><p>Movies and Series are kept separate, even when their group names match.</p></div><select id="filterType" style="max-width:150px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select></div><div id="catalogList">\${state.catalogs.length?state.catalogs.map(c=>\`<div class="catalog \${c.is_hidden?'hidden':''}" data-catalog="\${esc(c.id)}"><div><div class="catalog-title">\${esc(c.display_name)}</div><div class="meta"><span class="pill">\${c.media_type==='movie'?'Movies':'Series'}</span>\${esc(c.source_category_name)} · \${(c.item_count||0).toLocaleString()} items · \${c.is_hidden?'Hidden':'Visible'}</div></div><div class="catalog-actions"><button class="small" data-edit="\${esc(c.id)}">Rename</button><button class="small" data-toggle="\${esc(c.id)}">\${c.is_hidden?'Show':'Hide'}</button><button class="small" data-up="\${esc(c.id)}">↑</button><button class="small" data-down="\${esc(c.id)}">↓</button></div></div>\`).join(''):'<div class="empty"><strong>No catalogs yet</strong>Import your IPTV service to discover its VOD groups.</div>'}</div><div id="msg"></div></div>\`}
-function sourcesPage(){return \`<div class="page-head"><div><h2>IPTV sources</h2><div class="muted">Connect Xtream Codes or a VOD playlist.</div></div></div>\${state.relayConfigured?'<div class="notice">Provider downloads go through your relay on Render. The first refresh after it has been idle takes about a minute longer while it wakes up.</div>':''}<div class="panel"><h3>Import a source</h3><p>Use provider details from your authorized IPTV subscription. Never paste credentials into public links.</p><form id="sourceForm"><div class="formgrid"><div><label>Source name</label><input name="name" placeholder="My IPTV" required></div><div><label>Connection type</label><select name="kind" id="sourceKind"><option value="xtream">Xtream Codes API</option><option value="m3u">M3U playlist URL</option></select></div><div class="wide" id="xtreamFields"><label>Server URL</label><input name="baseUrl" placeholder="https://provider.example:8080"></div><div id="userField">\${field('Username','username','text','Provider username')}</div><div id="passField">\${field('Password','password','password','Provider password')}</div><div class="wide" id="m3uField" style="display:none">\${field('Playlist URL','playlistUrl','url','https://…/get.php?username=…&password=…&type=m3u_plus',false)}<label>Use a playlist file (optional)</label><input type="file" id="m3uFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain"><div class="help">If the provider blocks VODStack's server, open your playlist URL in a new browser tab so it downloads, then pick that file here. The URL above is still needed so playback links work. Xtream users: your playlist URL is usually <code>http://SERVER:PORT/get.php?username=USER&amp;password=PASS&amp;type=m3u_plus&amp;output=ts</code>.</div></div><div class="wide"><label>User-Agent (optional)</label><input name="userAgent" placeholder="Leave blank to use VLC's" autocomplete="off"><div class="help">Some providers only answer requests that look like a known player app. If imports get HTTP 401 or 403, try e.g. <code>IPTVSmartersPro</code> or <code>TiviMate/5.1.6 (Android 11)</code>.</div></div></div><div class="actions"><button class="primary" type="submit" id="importBtn">Import VOD catalogs</button></div><div class="help">Only Movies and Series are imported. Live channels and EPG are intentionally ignored.</div><div id="msg"></div></form></div><div class="panel"><h3>Connected sources</h3>\${state.sources.length?state.sources.map(s=>\`<div class="catalog"><div><div class="catalog-title">\${esc(s.name)}</div><div class="meta">\${s.kind==='xtream'?'Xtream Codes':'M3U playlist'} · \${s.last_refresh_at?'Last refresh '+esc(s.last_refresh_at):'Not refreshed yet'} · \${esc(s.last_refresh_status||'Ready')}</div></div><div class="catalog-actions"><button class="small" data-refresh="\${esc(s.id)}" data-kind="\${esc(s.kind)}">Refresh</button>\${s.kind==='m3u'?'<button class="small" data-file-refresh="'+esc(s.id)+'">Refresh from file</button>':''}<button class="small" data-ua="\${esc(s.id)}">User-Agent</button><button class="small danger" data-delete-source="\${esc(s.id)}">Remove</button></div></div>\`).join(''):'<div class="empty">No sources connected.</div>'}<input type="file" id="refreshFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain" style="display:none"><div id="msg2"></div></div>\`}
-function settingsPage(){return \`<div class="page-head"><div><h2>Setup & security</h2><div class="muted">Manage access to your saved configuration.</div></div></div><div class="panel"><h3>Recovery code</h3><p>Your recovery code is the way back into this setup from another device. The server stores only a hash of the code.</p><button id="rotateCode" class="danger">Rotate recovery code</button><div id="newCode"></div><div id="msg"></div></div><div class="panel"><h3>TMDB matching</h3><p>Links your titles to their real TMDB/IMDb entries, so Nuvio shows its normal posters, cast and descriptions and search works properly. Matching runs automatically after each import. Your key is encrypted before storage and never included in addon URLs.</p><form id="tmdbForm"><label>TMDB API key (v3)</label><input id="tmdbKey" name="apiKey" type="password" placeholder="Paste your TMDB v3 API key" autocomplete="new-password"><div class="actions"><button class="primary" type="submit">Save & validate key</button><button type="button" id="clearTmdb">Remove key</button><button type="button" id="runTmdbMatch">Match titles now</button><button type="button" id="retryTmdb">Retry not-found titles</button></div><div class="help" id="tmdbStatus">Checking…</div><div id="tmdbMsg"></div></form><div class="help" style="margin-top:10px">Get a key at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API settings</a>. Matching integration will use this key server-side.</div></div><div class="panel"><h3>Nuvio addon connection</h3><p>Install this link as an addon in Nuvio. It adds your provider's categories as rows, adds search, and plays titles from your provider. Titles matched with TMDB show Nuvio's normal metadata. Treat the link like a password.</p><div class="help">After VODStack is updated with new features, remove the addon in Nuvio and add it again so Nuvio picks up the changes (for example, search).</div><div class="actions"><button id="copyManifest">Copy manifest URL</button></div><div class="help" style="margin-top:8px;overflow-wrap:anywhere">\${esc(state.addonUrl||'Addon URL unavailable')}</div><div id="msg2"></div></div>\`}
-function wirePage(){const add=document.querySelector('#addSourceTop');if(add)add.onclick=()=>{state.tab='sources';render()};const kind=document.querySelector('#sourceKind');if(kind)kind.onchange=()=>{const m=kind.value==='m3u';document.querySelector('#xtreamFields').style.display=m?'none':'block';document.querySelector('#userField').style.display=m?'none':'block';document.querySelector('#passField').style.display=m?'none':'block';document.querySelector('#m3uField').style.display=m?'block':'none';document.querySelector('[name=baseUrl]').required=!m;document.querySelector('[name=username]').required=!m;document.querySelector('[name=password]').required=!m;document.querySelector('[name=playlistUrl]').required=m};if(kind)kind.onchange();
- const sf=document.querySelector('#sourceForm');if(sf)sf.onsubmit=async e=>{e.preventDefault();const btn=document.querySelector('#importBtn');const body=Object.fromEntries(new FormData(sf).entries());btn.disabled=true;let created=null;try{created=await api('/api/sources',{method:'POST',body:JSON.stringify(body)});const fileEl=document.querySelector('#m3uFile');const file=created.kind==='m3u'&&fileEl&&fileEl.files[0];let fileText;if(file){msg('Reading '+file.name+'…','success');fileText=await file.text()}const r=await VODImport.run(created.sourceId,created.kind,t=>msg(t,'success'),fileText);const extra=await matchAfter(r,msg);await load();state.tab='catalogs';render();msg('Imported '+r.total.toLocaleString()+' titles in '+r.catalogs+' categories.'+(r.skippedLive?' Skipped '+r.skippedLive.toLocaleString()+' live channels.':'')+extra,'success')}catch(e){msg(created?'Source saved, but the import failed: '+e.message+' You can retry with Refresh.':e.message);if(created)load().then(()=>{state.tab='sources';render();msg2(created?'Last error: '+e.message:'')})}finally{const b=document.querySelector('#importBtn');if(b)b.disabled=false}};
- document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{const c=state.catalogs.find(x=>x.id===b.dataset.edit);const name=prompt('Catalog display name:',c.display_name);if(name===null)return;try{await api('/api/catalogs/'+c.id,{method:'PATCH',body:JSON.stringify({display_name:name})});await load()}catch(e){alert(e.message)}});
- document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{const c=state.catalogs.find(x=>x.id===b.dataset.toggle);try{await api('/api/catalogs/'+c.id,{method:'PATCH',body:JSON.stringify({is_hidden:!c.is_hidden})});await load()}catch(e){alert(e.message)}});
- document.querySelectorAll('[data-up],[data-down]').forEach(b=>b.onclick=async()=>{const id=b.dataset.up||b.dataset.down;const i=state.catalogs.findIndex(c=>c.id===id);const j=i+(b.dataset.up?-1:1);if(j<0||j>=state.catalogs.length)return;const order=state.catalogs.map(c=>c.id);[order[i],order[j]]=[order[j],order[i]];try{await api('/api/catalog-order',{method:'POST',body:JSON.stringify({ids:order})});await load()}catch(e){alert(e.message)}});
- const filter=document.querySelector('#filterType');if(filter)filter.onchange=()=>document.querySelectorAll('[data-catalog]').forEach(el=>{const c=state.catalogs.find(x=>x.id===el.dataset.catalog);el.style.display=filter.value==='all'||c.media_type===filter.value?'grid':'none'});
- document.querySelectorAll('[data-refresh]').forEach(b=>b.onclick=async()=>{document.querySelectorAll('[data-refresh]').forEach(x=>x.disabled=true);b.textContent='Refreshing…';try{const r=await VODImport.run(b.dataset.refresh,b.dataset.kind,t=>msg2(t,'success'));const extra=await matchAfter(r,msg2);await load();msg2('Refresh complete: '+r.added.toLocaleString()+' new, '+r.changed.toLocaleString()+' updated, '+r.removed.toLocaleString()+' removed, '+r.unchanged.toLocaleString()+' unchanged.'+extra,'success')}catch(e){await load();msg2(e.message)}});
- document.querySelectorAll('[data-file-refresh]').forEach(b=>b.onclick=()=>{const picker=document.querySelector('#refreshFile');picker.value='';picker.onchange=async()=>{const file=picker.files[0];if(!file)return;document.querySelectorAll('[data-refresh],[data-file-refresh]').forEach(x=>x.disabled=true);try{msg2('Reading '+file.name+'…','success');const text=await file.text();const r=await VODImport.run(b.dataset.fileRefresh,'m3u',t=>msg2(t,'success'),text);const extra=await matchAfter(r,msg2);await load();msg2('Refresh complete: '+r.added.toLocaleString()+' new, '+r.changed.toLocaleString()+' updated, '+r.removed.toLocaleString()+' removed, '+r.unchanged.toLocaleString()+' unchanged.'+extra,'success')}catch(e){await load();msg2(e.message)}};picker.click()});
- document.querySelectorAll('[data-ua]').forEach(b=>b.onclick=async()=>{const ua=prompt('User-Agent sent to this provider (leave blank for the default):','');if(ua===null)return;try{await api('/api/sources/'+b.dataset.ua,{method:'PATCH',body:JSON.stringify({userAgent:ua})});msg2('User-Agent saved. Press Refresh to try again.','success')}catch(e){msg2(e.message)}});
- document.querySelectorAll('[data-delete-source]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this source and its imported items?'))return;try{await api('/api/sources/'+b.dataset.deleteSource,{method:'DELETE'});await load()}catch(e){alert(e.message)}});
- const rot=document.querySelector('#rotateCode');if(rot)rot.onclick=async()=>{if(!confirm('Rotate recovery code? Your current code will stop working.'))return;try{const r=await api('/api/recovery-code/rotate',{method:'POST',body:'{}'});document.querySelector('#newCode').innerHTML=\`<div class="notice" style="margin-top:14px"><strong>Save your new recovery code now.</strong><div class="code">\${esc(r.recoveryCode)}</div><div class="actions"><button id="copyNew">Copy code</button></div></div>\`;document.querySelector('#copyNew').onclick=()=>navigator.clipboard.writeText(r.recoveryCode)}catch(e){msg(e.message)}};
- const tmdbForm=document.querySelector('#tmdbForm');if(tmdbForm)tmdbForm.onsubmit=async e=>{e.preventDefault();const apiKey=document.querySelector('#tmdbKey').value.trim();const out=document.querySelector('#tmdbMsg');try{const d=await api('/api/tmdb/key',{method:'POST',body:JSON.stringify({apiKey})});document.querySelector('#tmdbKey').value='';document.querySelector('#tmdbStatus').textContent='TMDB key is saved and validated.';out.className='success';out.textContent='Key validated and saved. Press "Match titles now" to match what you already imported.';api('/api/tmdb/status').then(d=>{document.querySelector('#tmdbStatus').textContent=tmdbStatusText(d)}).catch(()=>{})}catch(err){out.className='error';out.textContent=err.message}};
- const runMatch=document.querySelector('#runTmdbMatch');const tmdbStatus=document.querySelector('#tmdbStatus');const refreshTmdb=()=>api('/api/tmdb/status').then(d=>{if(tmdbStatus)tmdbStatus.textContent=tmdbStatusText(d)}).catch(()=>{});if(tmdbStatus)refreshTmdb();
- if(runMatch)runMatch.onclick=async()=>{runMatch.disabled=true;const out=document.querySelector('#tmdbMsg');try{const m=await VODImport.match(t=>{out.className='success';out.textContent=t});out.className=m.skipped?'error':'success';out.textContent=m.skipped?'Save a TMDB key first.':'Done: '+m.matched.toLocaleString()+' of '+m.total.toLocaleString()+' titles matched.'}catch(err){out.className='error';out.textContent=err.message}finally{runMatch.disabled=false;refreshTmdb()}};
- const retry=document.querySelector('#retryTmdb');if(retry)retry.onclick=async()=>{const out=document.querySelector('#tmdbMsg');try{const r=await api('/api/tmdb/retry',{method:'POST',body:'{}'});out.className='success';out.textContent=r.reset.toLocaleString()+' titles queued again. Press "Match titles now".';refreshTmdb()}catch(err){out.className='error';out.textContent=err.message}};
- const clearTmdb=document.querySelector('#clearTmdb');if(clearTmdb)clearTmdb.onclick=async()=>{if(!confirm('Remove the saved TMDB key?'))return;const out=document.querySelector('#tmdbMsg');try{await api('/api/tmdb/key',{method:'DELETE'});document.querySelector('#tmdbStatus').textContent='No TMDB key configured.';out.className='success';out.textContent='Saved key removed.'}catch(err){out.className='error';out.textContent=err.message}};
- const cm=document.querySelector('#copyManifest');if(cm)cm.onclick=()=>navigator.clipboard.writeText(state.addonUrl||'').then(()=>msg('Manifest URL copied.','success'));
-}
-async function load(){try{const d=await api('/api/state');state.setup=true;state.catalogs=d.catalogs;state.sources=d.sources;state.summary=d.summary;state.addonUrl=d.addonUrl;state.relayConfigured=d.relayConfigured;render()}catch(e){state.setup=false;renderWelcome()}}
-load();
-</script></body></html>`;
+`;
+
+const PAGE_JS = String.raw`(function () {
+  var root = document.getElementById('root');
+  var topAction = document.getElementById('topAction');
+  var S = { tab: 'rows', data: null, filter: 'all', q: '', recovery: null };
+  var invite = new URLSearchParams(location.search).get('invite');
+
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function el(id) { return document.getElementById(id); }
+  function say(id, text, ok) { var e = el(id); if (e) { e.className = ok ? 'success' : 'error'; e.textContent = text; } }
+  function n(v) { return Number(v || 0).toLocaleString(); }
+  async function api(path, opts) {
+    opts = opts || {};
+    var init = { method: opts.method || 'GET', credentials: 'same-origin', headers: {} };
+    if (opts.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+    var r = await fetch(path, init);
+    var d = {};
+    try { d = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(d.error || 'Request failed');
+    return d;
+  }
+  function field(label, name, type, placeholder, value, help) {
+    return '<div><label>' + label + '</label><input name="' + name + '" type="' + (type || 'text') + '" placeholder="' + esc(placeholder || '') + '" value="' + esc(value || '') + '" autocomplete="off">' + (help ? '<div class="help">' + help + '</div>' : '') + '</div>';
+  }
+  function copyButton(id, text) {
+    var b = el(id);
+    if (b) b.onclick = function () { navigator.clipboard.writeText(text).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); };
+  }
+
+  async function load() {
+    try { S.data = await api('/api/state'); render(); }
+    catch (e) { S.data = null; welcome(); }
+  }
+
+  // ---------- signed out ----------
+  function welcome() {
+    topAction.innerHTML = '';
+    var recover = '<div class="row" style="margin-top:6px"><input id="recoverCode" placeholder="VOD-XXXXXX-XXXXXX-XXXXXX-XXXXXX" autocomplete="off"><button id="recoverBtn" style="flex:0 0 auto">Recover</button></div>';
+    if (invite) {
+      root.innerHTML = '<div class="panel"><div class="eyebrow">INVITE</div><h2 id="invTitle">Checking your invite…</h2><p id="invText"></p><div class="actions"><button class="primary" id="joinBtn" disabled>Join</button></div><div id="msg"></div><hr class="divider"><div class="help">Joined before on another device? Enter your recovery code:</div>' + recover + '</div>';
+      api('/api/invite?code=' + encodeURIComponent(invite)).then(function (d) {
+        el('invTitle').textContent = 'Join ' + d.name;
+        el('invText').textContent = 'You were invited to this shared library. Next you will enter your own provider login, then add your personal link to Nuvio.';
+        el('joinBtn').disabled = false;
+      }).catch(function (e) { el('invTitle').textContent = 'This invite link isn’t valid'; say('msg', e.message); });
+      el('joinBtn').onclick = async function () {
+        try {
+          var d = await api('/api/join', { method: 'POST', body: { code: invite } });
+          history.replaceState(null, '', location.pathname);
+          invite = null; S.recovery = d.recoveryCode; S.tab = 'login';
+          await load();
+        } catch (e) { say('msg', e.message); }
+      };
+    } else {
+      root.innerHTML = '<div class="notice">VODStack turns your IPTV provider’s movies and series into rows, search and playback inside Nuvio.</div><div class="panel"><div class="eyebrow">WELCOME</div><h2>Get started</h2><p>Use your recovery code to get back into your setup, or start a new one. Joining someone’s shared library? Open the invite link they sent you.</p>' + recover + '<div class="actions"><button id="newBtn">Start a new setup</button></div><div id="msg"></div></div>';
+      el('newBtn').onclick = async function () {
+        try { var d = await api('/api/setup', { method: 'POST', body: {} }); S.recovery = d.recoveryCode; await load(); } catch (e) { say('msg', e.message); }
+      };
+    }
+    el('recoverBtn').onclick = async function () {
+      try {
+        var code = el('recoverCode').value.trim();
+        if (!code) throw new Error('Enter your recovery code.');
+        await api('/api/recover', { method: 'POST', body: { code: code } });
+        history.replaceState(null, '', location.pathname); invite = null;
+        await load();
+      } catch (e) { say('msg', e.message); }
+    };
+  }
+
+  // ---------- signed in ----------
+  function render() {
+    var d = S.data;
+    topAction.innerHTML = '<button id="logout">Lock</button>';
+    el('logout').onclick = async function () { await api('/api/logout', { method: 'POST', body: {} }); S.data = null; welcome(); };
+    var tabs = d.role === 'owner' ? [['rows', '▦ Rows'], ['library', '⇄ Library'], ['settings', '⚙ Settings']]
+      : d.role === 'member' ? [['rows', '▦ Rows'], ['login', '🔑 My login'], ['settings', '⚙ Settings']]
+      : [['setup', '⇄ Set up provider'], ['settings', '⚙ Settings']];
+    if (!tabs.some(function (t) { return t[0] === S.tab; })) S.tab = tabs[0][0];
+    if (d.role === 'member' && !d.login && S.tab === 'rows') S.tab = 'login';
+    var banner = S.recovery ? '<div class="notice"><strong>Save your recovery code now.</strong> It’s the only way back into this setup from another device, and it’s shown only once.<div class="code">' + esc(S.recovery) + '</div><div class="actions"><button id="copyRecovery">Copy</button><button id="dismissRecovery">I saved it</button></div></div>' : '';
+    var page = S.tab === 'rows' ? rowsPage() : S.tab === 'library' ? libraryPage() : S.tab === 'login' ? loginPage() : S.tab === 'setup' ? setupPage() : settingsPage();
+    root.innerHTML = banner + '<div class="layout"><aside class="side">' + tabs.map(function (t) { return '<button class="nav ' + (S.tab === t[0] ? 'active' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('') +
+      '<div class="side-note">' + (d.library ? esc(d.library.name) + '<br>' + (d.role === 'owner' ? 'You own this library' : 'Shared library') : 'No provider yet') + '</div></aside><section class="content">' + page + '</section></div>';
+    document.querySelectorAll('[data-tab]').forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; });
+    if (S.recovery) { copyButton('copyRecovery', S.recovery); el('dismissRecovery').onclick = function () { S.recovery = null; render(); }; }
+    ({ rows: wireRows, library: wireLibrary, login: wireLogin, setup: wireSetup, settings: wireSettings })[S.tab]();
+  }
+
+  // ---------- rows ----------
+  function visibleRows() {
+    var q = S.q.toLowerCase();
+    return S.data.catalogs.filter(function (c) { return (S.filter === 'all' || c.media_type === S.filter) && (!q || c.name.toLowerCase().indexOf(q) >= 0 || c.source_category_name.toLowerCase().indexOf(q) >= 0); });
+  }
+  function rowsPage() {
+    var cats = S.data.catalogs;
+    if (!cats.length) return '<div class="panel"><div class="empty"><strong>No rows yet</strong>' + (S.data.role === 'owner' ? 'Import your provider on the Library page.' : 'The library owner hasn’t imported anything yet.') + '</div></div>';
+    var shown = cats.filter(function (c) { return !c.hidden && c.item_count > 0; }).length;
+    var titles = cats.reduce(function (t, c) { return t + c.item_count; }, 0);
+    return '<div class="page-head"><div><h2>Your rows</h2><div class="muted">These are the rows you’ll see in Nuvio. Changes here only affect you.</div></div></div>' +
+      '<div class="cards"><div class="stat"><strong>' + n(cats.length) + '</strong><span>Categories</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
+      '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' +
+      '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:150px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select></div>' +
+      '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button></div><div id="msg"></div><div id="rowList">' + rowList() + '</div></div>';
+  }
+  function rowList() {
+    var list = visibleRows();
+    if (!list.length) return '<div class="empty">No categories match.</div>';
+    return list.map(function (c) {
+      return '<div class="catalog ' + (c.hidden || !c.item_count ? 'hidden' : '') + '"><div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta"><span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' + (c.renamed ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + n(c.item_count) + ' titles · ' + (c.item_count ? (c.hidden ? 'Hidden' : 'Shown') : 'Empty') + '</div></div>' +
+        '<div class="catalog-actions"><button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button></div></div>';
+    }).join('');
+  }
+  function wireRows() {
+    var type = el('rowType'); if (!type) return;
+    type.value = S.filter;
+    type.onchange = function () { S.filter = type.value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    function bulk(hidden) {
+      return async function () {
+        var list = visibleRows();
+        try {
+          await api('/api/catalogs/bulk', { method: 'POST', body: { ids: list.map(function (c) { return c.id; }), is_hidden: hidden } });
+          list.forEach(function (c) { c.hidden = hidden; });
+          render();
+        } catch (e) { say('msg', e.message); }
+      };
+    }
+    el('showAll').onclick = bulk(false);
+    el('hideAll').onclick = bulk(true);
+    wireRowButtons();
+  }
+  function find(id) { return S.data.catalogs.filter(function (c) { return String(c.id) === String(id); })[0]; }
+  // Changes are applied in the page directly, so the dashboard doesn't have to reload everything.
+  function wireRowButtons() {
+    document.querySelectorAll('[data-rename]').forEach(function (b) {
+      b.onclick = async function () {
+        var c = find(b.dataset.rename);
+        var name = prompt('Row name (leave empty to use the provider’s name):', c.renamed ? c.name : '');
+        if (name === null) return;
+        try {
+          await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { display_name: name } });
+          c.name = name.trim() || c.source_category_name; c.renamed = !!name.trim();
+          el('rowList').innerHTML = rowList(); wireRowButtons();
+        } catch (e) { say('msg', e.message); }
+      };
+    });
+    document.querySelectorAll('[data-toggle]').forEach(function (b) {
+      b.onclick = async function () {
+        var c = find(b.dataset.toggle);
+        try { await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { is_hidden: !c.hidden } }); c.hidden = !c.hidden; el('rowList').innerHTML = rowList(); wireRowButtons(); }
+        catch (e) { say('msg', e.message); }
+      };
+    });
+    document.querySelectorAll('[data-move]').forEach(function (b) {
+      b.onclick = async function () {
+        var cats = S.data.catalogs;
+        var i = cats.indexOf(find(b.dataset.move));
+        var j = i + Number(b.dataset.dir);
+        if (j < 0 || j >= cats.length) return;
+        var t = cats[i]; cats[i] = cats[j]; cats[j] = t;
+        el('rowList').innerHTML = rowList(); wireRowButtons();
+        try { await api('/api/catalog-order', { method: 'POST', body: { ids: cats.map(function (c) { return c.id; }) } }); }
+        catch (e) { say('msg', e.message); load(); }
+      };
+    });
+  }
+
+  // ---------- importing (owner) ----------
+  async function matchAfter(r, show) {
+    var note = r.withTmdb ? ' ' + n(r.withTmdb) + ' came with TMDB IDs from the provider.' : '';
+    try {
+      var m = await VODImport.match(function (t) { show(t, true); });
+      if (m.skipped) return note + ' Add a TMDB key in Settings for full metadata.';
+      return note + (m.total ? ' TMDB matched ' + n(m.matched) + ' of ' + n(m.total) + ' new titles.' : '');
+    } catch (e) { return note + ' TMDB matching stopped: ' + e.message + ' (press “Match titles now” in Settings to continue)'; }
+  }
+  async function runImport(fileText, show) {
+    var r = await VODImport.run(S.data.library.kind, function (t) { show(t, true); }, fileText);
+    var extra = await matchAfter(r, show);
+    await load();
+    return 'Done: ' + n(r.total) + ' titles (' + n(r.added) + ' new, ' + n(r.changed) + ' updated, ' + n(r.removed) + ' removed).' + (r.skippedLive ? ' Skipped ' + n(r.skippedLive) + ' live channels.' : '') + extra;
+  }
+  function loginFields(kind, login) {
+    login = login || {};
+    return kind === 'xtream'
+      ? field('Server URL', 'baseUrl', 'url', 'http://server.example:8080', login.baseUrl) + field('Username', 'username', 'text', '', login.username) + field('Password', 'password', 'password', login.username ? 'Re-enter to change' : '', '')
+      : '<div class="wide">' + field('Playlist URL', 'playlistUrl', 'url', 'http://server.example:8080/get.php?username=…&password=…&type=m3u_plus', '', login.hasPlaylist ? 'Saved. Re-enter to change it.' : 'Your personal M3U link from the provider.') + '</div>';
+  }
+  var fileHelp = '<label>Use a playlist file (optional)</label><input type="file" id="m3uFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain"><div class="help">Only if your provider blocks VODStack: open your playlist URL in a new tab so it downloads, then pick that file here.</div>';
+
+  function setupPage() {
+    return '<div class="page-head"><div><h2>Set up your provider</h2><div class="muted">You’ll own this library. Friends on the same provider can join it later with an invite link, so it only has to be imported once.</div></div></div>' +
+      '<div class="panel"><form id="setupForm"><div class="formgrid"><div><label>Name</label><input name="name" placeholder="My IPTV" required></div><div><label>Connection type</label><select name="kind" id="kind"><option value="xtream">Xtream Codes</option><option value="m3u">M3U playlist</option></select></div><div class="wide formgrid" id="loginFields" style="padding:0">' + loginFields('xtream') + '</div><div class="wide" id="fileField" style="display:none">' + fileHelp + '</div>' +
+      '<div class="wide">' + field('User-Agent (optional)', 'userAgent', 'text', 'Leave blank to use VLC’s', '', 'Only if your provider rejects requests (HTTP 401/403): try IPTVSmartersPro.') + '</div></div><div class="actions"><button class="primary" id="setupBtn" type="submit">Save and import</button></div><div id="msg"></div></form></div>';
+  }
+  function wireSetup() {
+    var kind = el('kind');
+    kind.onchange = function () { el('loginFields').innerHTML = loginFields(kind.value); el('fileField').style.display = kind.value === 'm3u' ? 'block' : 'none'; };
+    el('setupForm').onsubmit = async function (e) {
+      e.preventDefault();
+      var body = Object.fromEntries(new FormData(el('setupForm')).entries());
+      var btn = el('setupBtn'); btn.disabled = true;
+      try {
+        await api('/api/library', { method: 'POST', body: body });
+        S.data = await api('/api/state');
+        var file = el('m3uFile') && el('m3uFile').files[0];
+        var text = await runImport(file ? await file.text() : undefined, function (t, ok) { say('msg', t, ok); });
+        S.tab = 'rows'; render(); say('msg', text, true);
+      } catch (err) { say('msg', err.message); btn.disabled = false; }
+    };
+  }
+
+  function libraryPage() {
+    var d = S.data, lib = d.library, st = lib.stats || {};
+    return '<div class="page-head"><div><h2>' + esc(lib.name) + '</h2><div class="muted">' + (lib.kind === 'xtream' ? 'Xtream Codes' : 'M3U playlist') + ' · shared library you own</div></div></div>' +
+      (d.relayConfigured ? '<div class="notice">Provider downloads go through your relay on Render.</div>' : '') +
+      '<div class="cards"><div class="stat"><strong>' + n(st.total) + '</strong><span>Titles</span></div><div class="stat"><strong>' + n(st.withImdb) + '</strong><span>With full metadata</span></div><div class="stat"><strong>' + n(st.pending) + '</strong><span>Waiting for TMDB</span></div></div>' +
+      '<div class="panel"><h3>Refresh</h3><p>Downloads the latest lists once and updates the library for everyone who joined. Only new or changed titles are saved.</p><div class="help">' + (lib.lastRefreshAt ? 'Last refresh: ' + esc(lib.lastRefreshAt) + ' UTC · ' : '') + esc(lib.status || 'Not imported yet') + '</div>' +
+      '<div class="actions"><button class="primary" id="refreshBtn">Refresh now</button>' + (lib.kind === 'm3u' ? '<button id="fileRefreshBtn">Refresh from file</button><input type="file" id="refreshFile" style="display:none" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain">' : '') + '</div><div id="msg"></div></div>' +
+      '<div class="panel"><h3>Invite friends</h3><p>Send this link to people who use the same provider. They enter their own login and get their own Nuvio link; nothing is imported again.</p>' +
+      (d.inviteUrl ? '<div class="code" style="font-size:13px">' + esc(d.inviteUrl) + '</div><div class="actions"><button id="copyInvite">Copy</button><button id="newInvite">Make a new link</button></div><div class="help">Making a new link stops the old one from working. People who already joined keep working.</div>' : '<div class="actions"><button class="primary" id="newInvite">Create invite link</button></div>') + '<div id="msg3"></div></div>' +
+      '<div class="panel"><h3>Your provider login</h3><p>Used for importing and for your own playback.</p><form id="loginForm"><input type="hidden" name="name" value="' + esc(lib.name) + '"><div class="formgrid">' + loginFields(lib.kind, d.login) + '</div><div class="actions"><button type="submit">Save login</button></div><div id="msg4"></div></form>' +
+      '<hr class="divider"><label>User-Agent</label><div class="row"><input id="ua" placeholder="Default (VLC)" value="' + esc(d.login ? d.login.userAgent : '') + '"><button id="saveUa" style="flex:0 0 auto">Save</button></div></div>' +
+      '<div class="panel"><h3>Delete library</h3><p>Removes all imported titles for you and everyone who joined.</p><button class="danger" id="deleteLib">Delete library</button></div>';
+  }
+  function wireLibrary() {
+    var show = function (t, ok) { say('msg', t, ok); };
+    el('refreshBtn').onclick = async function () {
+      el('refreshBtn').disabled = true;
+      try { var t = await runImport(undefined, show); S.tab = 'library'; render(); say('msg', t, true); }
+      catch (e) { show(e.message); el('refreshBtn').disabled = false; }
+    };
+    if (el('fileRefreshBtn')) el('fileRefreshBtn').onclick = function () {
+      var p = el('refreshFile'); p.value = '';
+      p.onchange = async function () {
+        if (!p.files[0]) return;
+        try { show('Reading ' + p.files[0].name + '…', true); var t = await runImport(await p.files[0].text(), show); S.tab = 'library'; render(); say('msg', t, true); }
+        catch (e) { show(e.message); }
+      };
+      p.click();
+    };
+    if (S.data.inviteUrl) copyButton('copyInvite', S.data.inviteUrl);
+    el('newInvite').onclick = async function () {
+      if (S.data.inviteUrl && !confirm('Make a new invite link? The current link will stop working.')) return;
+      try { var r = await api('/api/library/invite', { method: 'POST', body: {} }); S.data.inviteUrl = r.inviteUrl; render(); }
+      catch (e) { say('msg3', e.message); }
+    };
+    el('loginForm').onsubmit = async function (e) {
+      e.preventDefault();
+      try { await api('/api/library', { method: 'POST', body: Object.fromEntries(new FormData(el('loginForm')).entries()) }); say('msg4', 'Login saved.', true); }
+      catch (err) { say('msg4', err.message); }
+    };
+    el('saveUa').onclick = async function () {
+      try { await api('/api/login', { method: 'PATCH', body: { userAgent: el('ua').value } }); say('msg4', 'User-Agent saved.', true); }
+      catch (e) { say('msg4', e.message); }
+    };
+    el('deleteLib').onclick = async function () {
+      if (!confirm('Delete this library and all its titles, for you and everyone who joined?')) return;
+      try { await api('/api/library', { method: 'DELETE' }); await load(); } catch (e) { alert(e.message); }
+    };
+  }
+
+  // ---------- member login ----------
+  function loginPage() {
+    var d = S.data;
+    return '<div class="page-head"><div><h2>My login</h2><div class="muted">Your own ' + esc(d.library.name) + ' login. It’s used only when you press play, so your account and connection limit are your own.</div></div></div>' +
+      (d.login ? '<div class="notice">✓ Your login is saved. Next: copy your Nuvio link from Settings.</div>' : '<div class="notice">Enter the login you got from your provider.</div>') +
+      '<div class="panel"><form id="memberLogin"><div class="formgrid">' + loginFields(d.library.kind, d.login) + '<div class="wide">' + field('User-Agent (optional)', 'userAgent', 'text', 'Leave blank for the default', d.login ? d.login.userAgent : '') + '</div></div><div class="actions"><button class="primary" id="saveLogin" type="submit">Save login</button></div><div id="msg"></div></form></div>';
+  }
+  function wireLogin() {
+    el('memberLogin').onsubmit = async function (e) {
+      e.preventDefault();
+      el('saveLogin').disabled = true;
+      say('msg', 'Checking your login…', true);
+      try {
+        await api('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(el('memberLogin')).entries()) });
+        await load(); S.tab = 'settings'; render(); say('msg2', 'Login saved. Now add this link to Nuvio.', true);
+      } catch (err) { say('msg', err.message); el('saveLogin').disabled = false; }
+    };
+  }
+
+  // ---------- settings ----------
+  function tmdbText(d) {
+    if (!d.configured) return 'No TMDB key saved yet.';
+    return 'Key saved. ' + n(d.matched) + ' titles matched (' + n(d.withImdb) + ' with full metadata in Nuvio), ' + n(d.pending) + ' waiting, ' + n(d.unmatched) + ' not found.';
+  }
+  function settingsPage() {
+    var d = S.data;
+    return '<div class="page-head"><div><h2>Settings</h2></div></div>' +
+      '<div class="panel"><h3>Your Nuvio link</h3><p>In Nuvio, add this as an addon. It gives you the rows, search and playback. It’s personal: treat it like a password.</p>' +
+      (d.role === 'member' && !d.login ? '<div class="notice">Save your login on the My login page first, or nothing will play.</div>' : '') +
+      '<div class="code" style="font-size:13px">' + esc(d.addonUrl || '') + '</div><div class="actions"><button id="copyAddon">Copy</button></div><div class="help">After VODStack gets new features, remove the addon in Nuvio and add it again.</div><div id="msg2"></div></div>' +
+      (d.role === 'owner' ? '<div class="panel"><h3>TMDB matching</h3><p>Links titles to their real TMDB/IMDb entries so Nuvio shows its normal posters, cast and descriptions. Runs automatically after each refresh, and matches are shared with everyone in the library.</p><form id="tmdbForm"><label>TMDB API key (v3)</label><input id="tmdbKey" type="password" placeholder="' + (d.tmdbConfigured ? 'Saved (paste a new key to replace it)' : 'Paste your TMDB v3 API key') + '" autocomplete="new-password"><div class="actions"><button class="primary" type="submit">Save key</button><button type="button" id="runMatch">Match titles now</button><button type="button" id="retryMatch">Retry not-found titles</button></div><div class="help" id="tmdbStatus">…</div><div id="tmdbMsg"></div></form><div class="help" style="margin-top:8px">Get a free key at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API settings</a>.</div></div>' : '') +
+      '<div class="panel"><h3>Recovery code</h3><p>Your way back into this setup from another device. Making a new one stops the old one working.</p><button id="rotate" class="danger">Make a new recovery code</button><div id="newCode"></div></div>';
+  }
+  function wireSettings() {
+    copyButton('copyAddon', S.data.addonUrl || '');
+    el('rotate').onclick = async function () {
+      if (!confirm('Make a new recovery code? The current one will stop working.')) return;
+      try { var r = await api('/api/recovery-code/rotate', { method: 'POST', body: {} }); S.recovery = r.recoveryCode; render(); } catch (e) { alert(e.message); }
+    };
+    if (S.data.role !== 'owner') return;
+    var status = el('tmdbStatus');
+    var refresh = function () { api('/api/tmdb/status').then(function (d) { status.textContent = tmdbText(d); }).catch(function () { status.textContent = ''; }); };
+    refresh();
+    var out = function (t, ok) { say('tmdbMsg', t, ok); };
+    el('tmdbForm').onsubmit = async function (e) {
+      e.preventDefault();
+      try { await api('/api/tmdb/key', { method: 'POST', body: { apiKey: el('tmdbKey').value.trim() } }); el('tmdbKey').value = ''; out('Key saved. Press “Match titles now” to match what’s already imported.', true); refresh(); }
+      catch (err) { out(err.message); }
+    };
+    el('runMatch').onclick = async function () {
+      el('runMatch').disabled = true;
+      try { var m = await VODImport.match(function (t) { out(t, true); }); out(m.skipped ? 'Save a TMDB key first.' : 'Done: ' + n(m.matched) + ' of ' + n(m.total) + ' titles matched.', !m.skipped); }
+      catch (err) { out(err.message); }
+      finally { el('runMatch').disabled = false; refresh(); }
+    };
+    el('retryMatch').onclick = async function () {
+      try { var r = await api('/api/tmdb/retry', { method: 'POST', body: {} }); out(n(r.reset) + ' titles queued again. Press “Match titles now”.', true); refresh(); }
+      catch (err) { out(err.message); }
+    };
+  }
+
+  load();
+})();
+`;
+
+export function dashboard() {
+  return (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VODStack</title><style>' +
+    CSS +
+    '</style></head><body><div class="app"><header class="top"><div class="brand"><div class="logo">VS</div><div><div class="eyebrow">VODSTACK · IPTV TOOLS</div><h1 class="title">VODStack</h1></div></div><div id="topAction"></div></header><main id="root"><div class="empty">Loading…</div></main></div><script>' +
+    CLIENT_IMPORT_JS +
+    '</script><script>' +
+    PAGE_JS +
+    '</script></body></html>'
+  );
 }

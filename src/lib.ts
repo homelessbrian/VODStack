@@ -1,22 +1,11 @@
 // Shared helpers used by the dashboard API, the addon routes and TMDB matching.
-export interface D1Result<T = unknown> {
-  results: T[];
-  success: boolean;
-  meta: { changes: number; [key: string]: unknown };
-}
-export interface D1PreparedStatement {
-  bind(...values: unknown[]): D1PreparedStatement;
-  first<T = Record<string, unknown>>(): Promise<T | null>;
-  all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result>;
-  raw<T = unknown[]>(): Promise<T[]>;
-}
-export interface D1Database {
-  prepare(query: string): D1PreparedStatement;
-  batch(statements: D1PreparedStatement[]): Promise<D1Result[]>;
-}
+import type { D1Database } from './db';
+export type { D1Database, D1PreparedStatement, D1Result } from './db';
 export interface Env {
+  /** Set per request from TURSO_URL/TURSO_TOKEN (see db.ts). */
   DB: D1Database;
+  TURSO_URL?: string;
+  TURSO_TOKEN?: string;
   ENCRYPTION_KEY: string;
   APP_NAME?: string;
   /** Optional relay (relay/server.mjs on Render) for providers that block Cloudflare. Set both as Worker secrets. */
@@ -27,17 +16,6 @@ export interface Env {
 }
 export type MediaType = 'movie' | 'series';
 export type SourceKind = 'xtream' | 'm3u';
-export interface CatalogRow {
-  id: string;
-  source_id: string;
-  source_category_id: string;
-  source_category_name: string;
-  media_type: MediaType;
-  display_name: string;
-  is_hidden: number;
-  sort_order: number;
-  item_count?: number;
-}
 export interface SourceConfig {
   baseUrl?: string;
   username?: string;
@@ -170,12 +148,38 @@ export const XTREAM_PARTS: Record<string, string> = {
   vod_streams: 'get_vod_streams',
   series: 'get_series',
 };
-export async function getSource(env: Env, setupId: string, sourceId: string) {
-  const row = await env.DB.prepare('SELECT id,kind,encrypted_config FROM sources WHERE id=? AND setup_id=?')
-    .bind(sourceId, setupId)
-    .first<{ id: string; kind: SourceKind; encrypted_config: string }>();
-  if (!row) throw new HttpError(404, 'Source not found.');
-  return { ...row, cfg: await decrypt<SourceConfig>(env, row.encrypted_config) };
+export type Library = {
+  id: string;
+  owner_setup_id: string;
+  name: string;
+  kind: SourceKind;
+  last_refresh_at: string | null;
+  last_refresh_status: string | null;
+  stats_json: string | null;
+  invite_encrypted: string | null;
+};
+/** The library a setup belongs to (as owner or member), or null. */
+export async function getLibrary(env: Env, setupId: string) {
+  const lib = await env.DB.prepare(
+    'SELECT l.* FROM setups s JOIN libraries l ON l.id=s.library_id WHERE s.id=?',
+  )
+    .bind(setupId)
+    .first<Library>();
+  return lib ? { ...lib, isOwner: lib.owner_setup_id === setupId } : null;
+}
+/** The library, for actions only its owner may take (import, refresh, TMDB). */
+export async function ownedLibrary(env: Env, setupId: string) {
+  const lib = await getLibrary(env, setupId);
+  if (!lib) throw new HttpError(404, 'Set up your provider first.');
+  if (!lib.isOwner) throw new HttpError(403, 'Only the library owner can do this.');
+  return lib;
+}
+/** A person's own provider login for a library. */
+export async function getLogin(env: Env, setupId: string, libraryId: string) {
+  const row = await env.DB.prepare('SELECT encrypted_config FROM logins WHERE setup_id=? AND library_id=?')
+    .bind(setupId, libraryId)
+    .first<{ encrypted_config: string }>();
+  return row ? await decrypt<SourceConfig>(env, row.encrypted_config) : null;
 }
 export class HttpError extends Error {
   constructor(
@@ -209,6 +213,26 @@ export function stripCredentials(url: string, creds: { username: string; passwor
     }
   }
   return out;
+}
+/** Store an M3U stream link without credentials, and relative to the playlist's host when possible. */
+export function m3uStoredRef(url: string, cfg: SourceConfig) {
+  const clean = stripCredentials(url, m3uCredentials(cfg));
+  try {
+    const origin = new URL(cfg.playlistUrl || '').origin;
+    if (clean.startsWith(origin + '/')) return 'rel:' + clean.slice(origin.length);
+  } catch {}
+  return 'url:' + clean;
+}
+/** Rebuild a playable link from a stored ref using this person's own login. */
+export function playbackUrl(kind: SourceKind, cfg: SourceConfig, ref: string, providerItemId: string) {
+  if (ref.startsWith('xt:') && kind === 'xtream') return xtreamStreamUrl(cfg, 'movie', providerItemId, ref.slice(3));
+  if (ref.startsWith('rel:') || ref.startsWith('url:')) {
+    let u = ref.startsWith('rel:') ? new URL(cfg.playlistUrl || 'http://invalid').origin + ref.slice(4) : ref.slice(4);
+    const creds = m3uCredentials(cfg);
+    if (creds) u = u.split('{u}').join(encodeURIComponent(creds.username)).split('{p}').join(encodeURIComponent(creds.password));
+    return u;
+  }
+  return null;
 }
 export function hideSecrets(text: string, cfg: SourceConfig) {
   let out = text;
@@ -310,9 +334,11 @@ export async function providerRequest(env: Env, cfg: SourceConfig, target: URL, 
   return r;
 }
 /** Fetch one list from the provider and stream it straight back to the browser (no parsing here). */
-export async function proxyProvider(env: Env, setupId: string, sourceId: string, part: string) {
-  const src = await getSource(env, setupId, sourceId);
-  const r = await providerRequest(env, src.cfg, providerUrl(src.kind, src.cfg, part));
+export async function proxyProvider(env: Env, setupId: string, part: string) {
+  const lib = await ownedLibrary(env, setupId);
+  const cfg = await getLogin(env, setupId, lib.id);
+  if (!cfg) throw new HttpError(400, 'Your provider login is missing. Re-enter it on the Library page.');
+  const r = await providerRequest(env, cfg, providerUrl(lib.kind, cfg, part));
   return new Response(r.body, {
     headers: {
       'content-type': 'text/plain; charset=utf-8',
@@ -346,3 +372,38 @@ export async function setupByAddonToken(env: Env, token: string) {
   const h = await sha(token);
   return env.DB.prepare('SELECT id FROM setups WHERE addon_token_hash=?').bind(h).first<{ id: string }>();
 }
+
+export type CatalogView = {
+  id: number;
+  media_type: MediaType;
+  source_category_name: string;
+  item_count: number;
+  name: string;
+  hidden: boolean;
+  order: number;
+  renamed: boolean;
+};
+/** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */
+export async function catalogsFor(env: Env, setupId: string, libraryId: string): Promise<CatalogView[]> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,p.display_name,p.is_hidden,p.sort_order AS psort
+       FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.library_id=?`,
+    )
+      .bind(setupId, libraryId)
+      .all<any>()
+  ).results;
+  return rows
+    .map((r) => ({
+      id: r.id,
+      media_type: r.media_type,
+      source_category_name: r.source_category_name,
+      item_count: r.item_count,
+      name: r.display_name || r.source_category_name,
+      hidden: !!r.is_hidden,
+      order: r.psort ?? r.sort_order,
+      renamed: !!r.display_name,
+    }))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+}
+
