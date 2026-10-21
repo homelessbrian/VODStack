@@ -27,6 +27,7 @@ import {
   getLibrary,
   librarySettings,
   matchesHideRule,
+  HIDE_VALUES,
   backfillSortTitles,
   recountCatalogs,
   getLogin,
@@ -549,7 +550,14 @@ async function route(request: Request, env: Env): Promise<Response> {
       return json({ ok: true });
     }
     const name = typeof body.display_name === 'string' ? body.display_name.trim().slice(0, 150) : undefined;
-    const hidden = typeof body.is_hidden === 'boolean' ? (body.is_hidden ? 1 : 0) : undefined;
+    const hidden =
+      typeof body.hide === 'string' && body.hide in HIDE_VALUES
+        ? HIDE_VALUES[body.hide]
+        : typeof body.is_hidden === 'boolean'
+          ? body.is_hidden
+            ? 1
+            : 0
+          : undefined;
     if (name === undefined && hidden === undefined) return json({ error: 'No supported changes supplied.' }, 400);
     await env.DB.prepare(
       `INSERT INTO catalog_prefs(setup_id,catalog_id,display_name,is_hidden) VALUES(?1,?2,?3,?4)
@@ -752,13 +760,14 @@ async function route(request: Request, env: Env): Promise<Response> {
     // Show or hide many rows at once (one statement).
     const lib = await ownedLibrary(env, setupId);
     const ids = (Array.isArray(body.ids) ? body.ids : []).filter((n: unknown) => Number.isInteger(n)).slice(0, 2000);
-    if (!ids.length || typeof body.is_hidden !== 'boolean') return json({ error: 'Send ids and is_hidden.' }, 400);
+    const mode = typeof body.hide === 'string' && body.hide in HIDE_VALUES ? HIDE_VALUES[body.hide] : typeof body.is_hidden === 'boolean' ? (body.is_hidden ? 1 : 0) : null;
+    if (!ids.length || mode === null) return json({ error: 'Send ids and hide (none, row or all).' }, 400);
     await env.DB.prepare(
       `INSERT INTO catalog_prefs(setup_id,catalog_id,is_hidden)
        SELECT ?1,c.id,?3 FROM json_each(?2) j CROSS JOIN catalogs c ON c.id=j.value AND c.library_id=?4 WHERE true
        ON CONFLICT(setup_id,catalog_id) DO UPDATE SET is_hidden=excluded.is_hidden`,
     )
-      .bind(setupId, JSON.stringify(ids), body.is_hidden ? 1 : 0, lib.id)
+      .bind(setupId, JSON.stringify(ids), mode, lib.id)
       .run();
     return json({ ok: true });
   }

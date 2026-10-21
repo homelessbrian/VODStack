@@ -11,6 +11,7 @@
 import {
   catalogsFor,
   visibleFilter,
+  NOT_HIDDEN_EVERYWHERE,
   getLibrary,
   getLogin,
   json,
@@ -209,8 +210,10 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       const page = ids.slice(skip, skip + PAGE);
       if (!page.length) return cached({ metas: [] }, 900);
       const rows = (
-        await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META}`)
-          .bind(JSON.stringify(page))
+        await env.DB.prepare(
+          `SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META} AND ${NOT_HIDDEN_EVERYWHERE}`,
+        )
+          .bind(JSON.stringify(page), lib.owner_setup_id, lib.id)
           .all<ItemRow>()
       ).results;
       const byId = new Map(rows.map((r) => [r.id, r]));
@@ -300,9 +303,9 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
   const rows = (
     await env.DB.prepare(
       `SELECT v.provider_item_id,v.playback_ref,c.source_category_name AS cat FROM vod_items v CROSS JOIN catalogs c ON c.id=v.catalog_id
-       WHERE v.imdb_id=? AND v.library_id=? AND v.media_type=? AND v.is_available=1${META} LIMIT 6`,
+       WHERE v.imdb_id=? AND v.library_id=? AND v.media_type=? AND v.is_available=1${META} AND ${NOT_HIDDEN_EVERYWHERE} LIMIT 6`,
     )
-      .bind(tt[1], lib.id, type)
+      .bind(tt[1], lib.id, type, lib.owner_setup_id, lib.id)
       .all<{ provider_item_id: string; playback_ref: string | null; cat: string }>()
   ).results;
   const done = new Set<string>();

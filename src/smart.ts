@@ -8,7 +8,7 @@
 //
 // The result is cached on the row and refreshed every few hours by the cron (or on first view), so
 // Nuvio never waits on TMDB. A refresh costs ≤10 TMDB calls and one indexed lookup per page.
-import { decrypt, HttpError, visibleFilter, type Env, type MediaType } from './lib';
+import { decrypt, HttpError, NOT_HIDDEN_EVERYWHERE, visibleFilter, type Env, type MediaType } from './lib';
 import { tmdbBase } from './tmdb';
 
 export type CustomFilters = {
@@ -181,10 +181,10 @@ export async function buildSmartIds(env: Env, def: SmartDef, libraryId: string, 
       // One indexed lookup per page. Several provider entries can share a TMDB ID; keep one.
       const found = (
         await env.DB.prepare(
-          `SELECT v.id,v.tmdb_id FROM vod_items v WHERE v.tmdb_id IN (SELECT value FROM json_each(?1))
-           AND v.library_id=?2 AND v.media_type=?3 AND v.is_available=1${VIS}`,
+          `SELECT v.id,v.tmdb_id FROM vod_items v WHERE v.tmdb_id IN (SELECT value FROM json_each(?))
+           AND v.library_id=? AND v.media_type=? AND v.is_available=1${VIS} AND ${NOT_HIDDEN_EVERYWHERE}`,
         )
-          .bind(JSON.stringify(tmdbIds), libraryId, def.type)
+          .bind(JSON.stringify(tmdbIds), libraryId, def.type, ownerSetupId, libraryId)
           .raw<[number, number]>()
       ).reduce((m, [id, t]) => (m.has(t) ? m : m.set(t, id)), new Map<number, number>());
       for (const t of tmdbIds) {

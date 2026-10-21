@@ -189,7 +189,7 @@ const PAGE_JS = String.raw`(function () {
       '<div class="cards"><div class="stat"><strong>' + n(cats.filter(function (c) { return !c.mergedInto; }).length) + '</strong><span>Rows</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
       '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + smartPanel() + rulesPanel() +
       '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="smart">Smart</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
-      '<div class="actions"><button class="small" id="showAll">Show all listed</button><button class="small" id="hideAll">Hide all listed</button><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
+      '<div class="actions"><select id="bulkHide" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Visibility of all listed…</option><option value="none">Show all</option><option value="row">Hide rows only (keep in search)</option><option value="all">Hide everywhere</option></select><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="mergeForm"></div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
   }
   var STARTER = [['trending_day', 'movie'], ['trending_day', 'series'], ['popular', 'movie'], ['popular', 'series'], ['top_rated', 'movie'], ['top_rated', 'series']];
   function smartPanel() {
@@ -343,17 +343,21 @@ const PAGE_JS = String.raw`(function () {
     var meta = '<span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' +
       (c.isMerge ? '<span class="pill">Merged</span>' : '') + (c.smart ? '<span class="pill" style="color:var(--accent)">Smart · TMDB</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
       (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles' + (!c.smart && filtering() ? ' (' + n(c.visibleCount) + ' in Nuvio)' : '') + ' · ' +
-      (parent ? 'Shown inside “' + esc(parent.name) + '”' : !c.item_count ? 'Empty' : c.hidden ? 'Hidden' : filtering() && !c.visibleCount ? 'Not in Nuvio (everything filtered out)' : 'Shown');
+      (parent ? 'Shown inside “' + esc(parent.name) + '”' : !c.item_count ? 'Empty' : c.hideMode === 'all' ? 'Hidden everywhere' : c.hideMode === 'row' ? 'Row hidden (titles still in search)' : filtering() && !c.visibleCount ? 'Not in Nuvio (everything filtered out)' : 'Shown');
     var buttons = parent
       ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
-      : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
+      : '<button class="small" data-rename="' + c.id + '">Rename</button>' +
+        '<select data-hide="' + c.id + '" title="Where this row and its titles appear" style="width:auto;padding:7px 9px;font-size:12px">' +
+        [['none', 'Shown'], ['row', 'Hide row'], ['all', 'Hide everywhere']].map(function (o) { return '<option value="' + o[0] + '"' + (c.hideMode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
         (c.isMerge ? '<button class="small" data-unmerge="' + c.id + '">Unmerge</button>' : '') +
         (c.smart ? (c.smart.list === 'custom' ? '<button class="small" data-smart-edit="' + c.id + '">Edit</button>' : '') + '<button class="small" data-smart-refresh="' + c.id + '">Refresh</button><button class="small danger" data-smart-delete="' + c.id + '">Delete</button>'
           : '<button class="small" data-order="' + c.id + '" title="How titles are ordered in this row">' + (c.titleOrder === 'recent' ? 'Newest first' : 'A–Z') + '</button>') +
         '<button class="small" data-move="' + c.id + '" data-dir="top" title="Move to top">⤒</button><button class="small" data-move="' + c.id + '" data-dir="-1">↑</button><button class="small" data-move="' + c.id + '" data-dir="1">↓</button><button class="small" data-move="' + c.id + '" data-dir="bottom" title="Move to bottom">⤓</button>';
     var grip = indent ? '' : '<span data-drag="' + c.id + '" title="Drag to reorder" style="cursor:grab;touch-action:none;user-select:none;color:var(--muted);font-size:18px;line-height:1;padding:2px 4px">⠿</span>';
     var pick = c.smart ? '<span style="width:13px"></span>' : '<input type="checkbox" data-pick="' + c.id + '" style="width:auto;margin-top:4px"' + (S.picked && S.picked[c.id] ? ' checked' : '') + '>';
-    var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + pick + '<div><div class="catalog-title">' + esc(c.name) + '</div><div class="meta">' + meta + '</div></div></div>' +
+    var row = '<div class="catalog ' + (c.hidden || !c.item_count || parent ? 'hidden' : '') + '"' + (indent ? ' style="margin-left:28px"' : '') + '><div style="display:flex;gap:8px;align-items:flex-start">' + grip + pick + '<div style="flex:1;min-width:0">' + (S.renaming === c.id
+        ? '<div class="row" style="gap:6px"><input id="renameBox" value="' + esc(c.renamed || c.smart || c.isMerge ? c.name : '') + '" placeholder="' + esc(c.source_category_name) + '" maxlength="150"><button class="small primary" id="renameSave" style="flex:0 0 auto">Save</button><button class="small" id="renameCancel" style="flex:0 0 auto">Cancel</button></div><div class="help">' + (c.smart || c.isMerge ? 'Enter a name for this row.' : 'Leave empty to use the provider’s name.') + ' Enter saves, Esc cancels.</div>'
+        : '<div class="catalog-title">' + esc(c.name) + '</div>') + '<div class="meta">' + meta + '</div></div></div>' +
       '<div class="catalog-actions"><button class="small" data-view="' + c.id + '">View</button>' + buttons + '</div></div>';
     if (indent) return row;
     if (!members.length) return '<div data-group="' + c.id + '">' + row + '</div>';
@@ -430,28 +434,37 @@ const PAGE_JS = String.raw`(function () {
     ['onlyMatched', 'englishOriginal', 'englishCopy'].forEach(function (id) { el(id).onchange = filterChanged; });
     el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
-    function bulk(hidden) {
-      return async function () {
-        var list = visibleRows();
-        try {
-          await api('/api/catalogs/bulk', { method: 'POST', body: { ids: list.map(function (c) { return c.id; }), is_hidden: hidden } });
-          list.forEach(function (c) { c.hidden = hidden; });
-          render();
-        } catch (e) { say('msg', e.message); }
-      };
-    }
+    el('bulkHide').onchange = async function () {
+      var mode = el('bulkHide').value;
+      if (!mode) return;
+      var list = visibleRows().filter(function (c) { return !c.mergedInto; });
+      try {
+        await api('/api/catalogs/bulk', { method: 'POST', body: { ids: list.map(function (c) { return c.id; }), hide: mode } });
+        list.forEach(function (c) { c.hideMode = mode; c.hidden = mode !== 'none'; });
+        render();
+        refreshSmartRows(function () {});
+        say('msg', n(list.length) + ' rows updated.', true);
+      } catch (e) { say('msg', e.message); el('bulkHide').value = ''; }
+    };
     el('mergeBtn').onclick = async function () {
       var ids = Object.keys(S.picked || {}).filter(function (k) { return S.picked[k]; }).map(Number);
       var rows = ids.map(find).filter(Boolean);
       var target = rows.filter(function (c) { return c.isMerge; })[0];
       if (rows.length < 2) return say('msg', 'Tick at least two categories first.');
-      var name = target ? target.name : prompt('Name for the merged row:', rows.map(function (c) { return c.name; }).join(' + ').slice(0, 80));
-      if (name === null) return;
-      try { await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; await load(); say('msg', 'Merged.', true); }
-      catch (e) { say('msg', e.message); }
+      var doMerge = async function (name) {
+        try { await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; await load(); say('msg', 'Merged.', true); }
+        catch (e) { say('msg', e.message); }
+      };
+      if (target) return doMerge(target.name);
+      var box = el('mergeForm');
+      box.innerHTML = '<div class="panel" style="margin:12px 0;background:var(--panel2)"><label style="margin-top:0">Name for the merged row</label><div class="row" style="gap:6px"><input id="mergeName" maxlength="150" value="' + esc(rows.map(function (c) { return c.name; }).join(' + ').slice(0, 80)) + '"><button class="small primary" id="mergeSave" style="flex:0 0 auto">Merge ' + rows.length + ' rows</button><button class="small" id="mergeCancel" style="flex:0 0 auto">Cancel</button></div></div>';
+      var input = el('mergeName');
+      input.focus(); if (input.select) input.select();
+      var go = function () { box.innerHTML = ''; doMerge(input.value.trim()); };
+      el('mergeSave').onclick = go;
+      el('mergeCancel').onclick = function () { box.innerHTML = ''; };
+      input.onkeydown = function (e) { if (e.key === 'Enter') go(); if (e.key === 'Escape') box.innerHTML = ''; };
     };
-    el('showAll').onclick = bulk(false);
-    el('hideAll').onclick = bulk(true);
     wireRowButtons();
   }
   // Save a new top-level order. Categories inside merged rows keep following their merged row.
@@ -588,22 +601,37 @@ const PAGE_JS = String.raw`(function () {
       };
     });
     document.querySelectorAll('[data-rename]').forEach(function (b) {
-      b.onclick = async function () {
-        var c = find(b.dataset.rename);
-        var name = prompt('Row name (leave empty to use the provider’s name):', c.renamed ? c.name : '');
-        if (name === null) return;
+      b.onclick = function () { S.renaming = Number(b.dataset.rename); el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    });
+    var box = el('renameBox');
+    if (box) {
+      var c = find(S.renaming);
+      var close = function () { S.renaming = null; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+      var save = async function () {
+        var name = box.value.trim();
+        if (!name && (c.smart || c.isMerge)) return say('msg', 'This row needs a name.');
         try {
           await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { display_name: name } });
-          c.name = name.trim() || c.source_category_name; c.renamed = !!name.trim();
-          el('rowList').innerHTML = rowList(); wireRowButtons();
+          c.name = name || c.source_category_name; c.renamed = !!name;
+          close();
         } catch (e) { say('msg', e.message); }
       };
-    });
-    document.querySelectorAll('[data-toggle]').forEach(function (b) {
-      b.onclick = async function () {
-        var c = find(b.dataset.toggle);
-        try { await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { is_hidden: !c.hidden } }); c.hidden = !c.hidden; el('rowList').innerHTML = rowList(); wireRowButtons(); }
-        catch (e) { say('msg', e.message); }
+      box.focus(); if (box.select) box.select();
+      box.onkeydown = function (e) { if (e.key === 'Enter') save(); if (e.key === 'Escape') close(); };
+      el('renameSave').onclick = save;
+      el('renameCancel').onclick = close;
+    }
+    document.querySelectorAll('[data-hide]').forEach(function (b) {
+      b.onchange = async function () {
+        var c = find(b.dataset.hide);
+        try {
+          var was = c.hideMode;
+          await api('/api/catalogs/' + c.id, { method: 'PATCH', body: { hide: b.value } });
+          c.hideMode = b.value; c.hidden = b.value !== 'none';
+          el('rowList').innerHTML = rowList(); wireRowButtons();
+          // Smart rows leave out titles hidden everywhere; rebuild them so they refill right away.
+          if (was === 'all' || b.value === 'all') refreshSmartRows(function () {});
+        } catch (e) { say('msg', e.message); b.value = c.hideMode; }
       };
     });
     document.querySelectorAll('[data-move]').forEach(function (b) {

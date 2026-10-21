@@ -227,6 +227,17 @@ export async function backfillSortTitles(env: Env, libraryId: string, sortKey: (
   await env.DB.batch(writes);
   return { done, checked: rows.length };
 }
+/**
+ * catalog_prefs.is_hidden values: 1 = hidden everywhere (row, search, smart rows, stream choices),
+ * 2 = only the row is hidden from the home screen.
+ */
+export const HIDE_VALUES: Record<string, number> = { none: 0, all: 1, row: 2 };
+/**
+ * SQL condition (alias v = vod_items) that leaves out titles whose category, or the merged row it's
+ * in, the owner hid everywhere. Binds: owner setup id, library id (pass as extra params).
+ */
+export const NOT_HIDDEN_EVERYWHERE = `v.catalog_id NOT IN (SELECT hc.id FROM catalogs hc JOIN catalog_prefs hp
+  ON hp.catalog_id=COALESCE(hc.merged_into,hc.id) AND hp.setup_id=? AND hp.is_hidden=1 WHERE hc.library_id=?)`;
 /** Recount titles per row (all, with metadata, and visible in Nuvio). Reads the library once; writes only changed rows. */
 export async function recountCatalogs(env: Env, libraryId: string) {
   const lib = await env.DB.prepare('SELECT settings_json,stats_json FROM libraries WHERE id=?')
@@ -480,7 +491,10 @@ export type CatalogView = {
   source_category_name: string;
   item_count: number;
   name: string;
+  /** Not on the home screen (either way of hiding). */
   hidden: boolean;
+  /** 'row' = only the row is hidden (titles still in search etc.); 'all' = hidden everywhere. */
+  hideMode: 'none' | 'row' | 'all';
   order: number;
   renamed: boolean;
   isMerge: boolean;
@@ -509,6 +523,7 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       item_count: r.item_count,
       name: r.display_name || r.source_category_name,
       hidden: !!r.is_hidden,
+      hideMode: (r.is_hidden === 2 ? 'row' : r.is_hidden ? 'all' : 'none') as 'none' | 'row' | 'all',
       order: r.psort ?? r.sort_order,
       renamed: !!r.display_name,
       isMerge: !!r.is_merge,

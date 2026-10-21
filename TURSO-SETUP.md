@@ -50,12 +50,16 @@ On the **Rows** page:
   as another language** ("IT - Title", "[ITA]", "ITALIAN MOVIES"…): both off by default, switch on/off
   any time. Turning one on the first time fills in language info for the existing library (a few minutes).
   Rows left with nothing to show disappear from Nuvio.
-- **Hide/Show**, **Rename**, drag the **⠿** handle (or use ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
+- Each row's menu: **Shown**, **Hide row** (off the home screen, but its titles still appear in search,
+  smart rows and stream choices) or **Hide everywhere** (kept out of all of those too).
+  **Visibility of all listed…** sets it for every row the filter shows.
+- **Rename** edits the name right in the row (Enter saves, Esc cancels). Drag the **⠿** handle (or use
+  ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
 - **View** a row to see its titles, with posters and whether TMDB matched them.
 - **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.
 - **Merge**: tick categories and press **Merge selected**. The merged row always shows everything in its
   categories, so new titles from the provider appear in it automatically. **Unmerge** splits it back.
-- **Auto-hide**: words like `ARABIC, XXX` hide matching categories, including future ones. Optionally,
+- **Auto-hide**: words like `ARABIC, XXX` hide matching categories everywhere, including future ones. Optionally,
   new categories start hidden and get a **New** badge.
 
 - **Smart rows**: rows built from TMDB lists (Trending today/this week, Popular, Top rated, Now in
