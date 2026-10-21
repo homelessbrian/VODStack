@@ -189,7 +189,7 @@ const PAGE_JS = String.raw`(function () {
       '<div class="cards"><div class="stat"><strong>' + n(cats.filter(function (c) { return !c.mergedInto; }).length) + '</strong><span>Rows</span></div><div class="stat"><strong>' + n(shown) + '</strong><span>Shown in Nuvio</span></div><div class="stat"><strong>' + n(titles) + '</strong><span>Titles</span></div></div>' +
       '<div class="notice">Tip: hide categories you don’t watch. Fewer rows means Nuvio’s home screen loads faster.</div>' + smartPanel() + rulesPanel() +
       '<div class="panel"><div class="row"><input id="rowSearch" placeholder="Filter categories…" value="' + esc(S.q) + '"><select id="rowType" style="max-width:130px"><option value="all">All types</option><option value="movie">Movies</option><option value="series">Series</option></select><select id="rowStatus" style="max-width:130px"><option value="all">Any status</option><option value="shown">Shown</option><option value="hidden">Hidden</option><option value="merged">Merged</option><option value="smart">Smart</option><option value="new">New</option><option value="empty">Empty</option></select></div>' +
-      '<div class="actions"><select id="bulkHide" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Visibility of all listed…</option><option value="none">Show all</option><option value="row">Hide rows only (keep in search)</option><option value="all">Hide everywhere</option></select><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="mergeForm"></div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
+      '<div class="actions"><select id="bulkHide" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Visibility of all listed…</option><option value="none">Show all</option><option value="row">Hide rows only (keep in search)</option><option value="all">Hide everywhere</option></select><button class="small" id="pickAll">Select all listed</button><button class="small primary" id="mergeBtn">Merge selected</button><select id="sortRows" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Sort all rows…</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="most">Most titles first</option><option value="fewest">Fewest titles first</option><option value="movie">Movies first</option><option value="series">Series first</option></select></div><div class="help">Merge: tick two or more categories (or a merged row plus the categories to add to it), then press Merge selected. New titles in any of them keep showing up in the merged row.</div><div id="pickBar"></div><div id="mergeForm"></div><div id="msg"></div><div id="viewer"></div><div id="rowList">' + rowList() + '</div></div>';
   }
   var STARTER = [['trending_day', 'movie'], ['trending_day', 'series'], ['popular', 'movie'], ['popular', 'series'], ['top_rated', 'movie'], ['top_rated', 'series']];
   function smartPanel() {
@@ -447,12 +447,14 @@ const PAGE_JS = String.raw`(function () {
       } catch (e) { say('msg', e.message); el('bulkHide').value = ''; }
     };
     el('mergeBtn').onclick = async function () {
-      var ids = Object.keys(S.picked || {}).filter(function (k) { return S.picked[k]; }).map(Number);
+      var ids = pickedIds();
       var rows = ids.map(find).filter(Boolean);
       var target = rows.filter(function (c) { return c.isMerge; })[0];
       if (rows.length < 2) return say('msg', 'Tick at least two categories first.');
+      // A merged row among the picks is the one everything goes into.
+      if (target) ids = [target.id].concat(ids.filter(function (i) { return i !== target.id; }));
       var doMerge = async function (name) {
-        try { await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; await load(); say('msg', 'Merged.', true); }
+        try { var r = await api('/api/merges', { method: 'POST', body: { ids: ids, name: name } }); S.picked = {}; S.open = S.open || {}; S.open[r.id] = true; await load(); say('msg', 'Merged.', true); }
         catch (e) { say('msg', e.message); }
       };
       if (target) return doMerge(target.name);
@@ -552,8 +554,33 @@ const PAGE_JS = String.raw`(function () {
   }
   function find(id) { return S.data.catalogs.filter(function (c) { return String(c.id) === String(id); })[0]; }
   // Changes are applied in the page directly, so the dashboard doesn't have to reload everything.
+  function pickedIds() { return Object.keys(S.picked || {}).filter(function (k) { return S.picked[k]; }).map(Number).filter(function (i) { return find(i); }); }
+  // "N selected · Clear · Add selected to…" — picks stay ticked while you change the filter.
+  function renderPickBar() {
+    var bar = el('pickBar');
+    if (!bar) return;
+    var ids = pickedIds();
+    if (!ids.length) { bar.innerHTML = ''; return; }
+    var merges = S.data.catalogs.filter(function (c) { return c.isMerge; });
+    bar.innerHTML = '<div class="notice" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0"><strong>' + n(ids.length) + ' selected</strong><button class="small" id="pickClear">Clear</button>' +
+      (merges.length ? '<select id="addTo" style="width:auto;padding:7px 9px;font-size:12px"><option value="">Add selected to…</option>' + merges.map(function (m) { return '<option value="' + m.id + '">' + esc(m.name) + ' (' + (m.media_type === 'movie' ? 'Movies' : 'Series') + ')</option>'; }).join('') + '</select>' : '') +
+      '<span class="help">or press Merge selected to make a new merged row.</span></div>';
+    el('pickClear').onclick = function () { S.picked = {}; el('rowList').innerHTML = rowList(); wireRowButtons(); };
+    if (el('addTo')) el('addTo').onchange = async function () {
+      var target = Number(el('addTo').value);
+      if (!target) return;
+      var ids2 = pickedIds().filter(function (i) { return i !== target; });
+      try {
+        var r = await api('/api/merges', { method: 'POST', body: { ids: ids2, target: target } });
+        S.picked = {}; S.open = S.open || {}; S.open[target] = true;
+        await load();
+        say('msg', 'Added to “' + find(target).name + '”' + (r.combined ? ' (' + r.combined + ' merged row' + (r.combined > 1 ? 's' : '') + ' combined into it)' : '') + '.', true);
+      } catch (e) { say('msg', e.message); el('addTo').value = ''; }
+    };
+  }
   function wireRowButtons() {
     wireDrag();
+    renderPickBar();
     document.querySelectorAll('[data-expand]').forEach(function (b) {
       b.onclick = function () {
         S.open = S.open || {};
@@ -582,7 +609,7 @@ const PAGE_JS = String.raw`(function () {
       b.onclick = function () { openViewer(find(b.dataset.view), 0, ''); };
     });
     document.querySelectorAll('[data-pick]').forEach(function (b) {
-      b.onchange = function () { S.picked = S.picked || {}; S.picked[b.dataset.pick] = b.checked; };
+      b.onchange = function () { S.picked = S.picked || {}; S.picked[b.dataset.pick] = b.checked; renderPickBar(); };
     });
     document.querySelectorAll('[data-order]').forEach(function (b) {
       b.onclick = async function () {

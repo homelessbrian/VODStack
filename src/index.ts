@@ -705,39 +705,52 @@ async function route(request: Request, env: Env): Promise<Response> {
        WHERE library_id=? AND is_merge=1`,
     ).bind(libraryId);
   if (method === 'POST' && path === '/api/merges') {
+    // Merge categories, add them to an existing merged row (body.target, or a merged row among the
+    // picks), and/or combine several merged rows into one. Titles never move; rows just point.
     const lib = await ownedLibrary(env, setupId);
     const all = await catalogsFor(env, setupId, lib.id);
     const byId = new Map(all.map((c) => [c.id, c]));
-    const picked = [...new Set<number>((Array.isArray(body.ids) ? body.ids : []).map(Number))].map((i) => byId.get(i)).filter(Boolean) as typeof all;
-    const targets = picked.filter((c) => c.isMerge);
-    const members = picked.filter((c) => !c.isMerge);
+    const ids = [...new Set<number>([...(body.target ? [Number(body.target)] : []), ...(Array.isArray(body.ids) ? body.ids : []).map(Number)])];
+    const picked = ids.map((i) => byId.get(i)).filter(Boolean) as typeof all;
     if (picked.some((c) => c.smart)) return json({ error: 'Smart rows can’t be merged.' }, 400);
-    if (targets.length > 1) return json({ error: 'Pick at most one merged row to add to.' }, 400);
-    if (!members.length || (!targets.length && members.length < 2))
-      return json({ error: 'Pick at least two categories to merge (or a merged row plus the categories to add to it).' }, 400);
+    if (body.target && !byId.get(Number(body.target))?.isMerge) return json({ error: 'That isn’t a merged row.' }, 400);
+    const mergedRows = picked.filter((c) => c.isMerge); // the first one is the target (body.target goes first)
+    const categories = picked.filter((c) => !c.isMerge);
     if (new Set(picked.map((c) => c.media_type)).size > 1) return json({ error: 'Movies and series can’t be merged together.' }, 400);
-    let target = targets[0]?.id;
+    let target = mergedRows[0]?.id;
+    const otherMerged = mergedRows.slice(1).map((c) => c.id);
+    if (target ? !categories.length && !otherMerged.length : categories.length < 2)
+      return json({ error: 'Pick at least two categories to merge, or a merged row plus what to add to it.' }, 400);
     if (!target) {
-      const name = str(body.name, 150) || members.map((m) => m.name).join(' + ').slice(0, 150);
+      const name = str(body.name, 150) || categories.map((m) => m.name).join(' + ').slice(0, 150);
       const row = await env.DB.prepare(
         `INSERT INTO catalogs(library_id,media_type,source_category_id,source_category_name,item_count,sort_order,is_merge)
          VALUES(?,?,?,?,0,?,1) RETURNING id`,
       )
-        .bind(lib.id, members[0].media_type, 'merge:' + uuid(), name, Math.min(...members.map((m) => m.order)))
+        .bind(lib.id, categories[0].media_type, 'merge:' + uuid(), name, Math.min(...categories.map((m) => m.order)))
         .first<{ id: number }>();
       target = row!.id;
     }
+    const EMPTY_MERGES = 'SELECT id FROM catalogs WHERE library_id=?1 AND is_merge=1 AND id NOT IN (SELECT merged_into FROM catalogs WHERE merged_into IS NOT NULL)';
     await env.DB.batch([
+      // Categories picked (including ones currently in another merged row) move here.
       env.DB.prepare('UPDATE catalogs SET merged_into=?1 WHERE id IN (SELECT value FROM json_each(?2)) AND library_id=?3 AND is_merge=0').bind(
         target,
-        JSON.stringify(members.map((m) => m.id)),
+        JSON.stringify(categories.map((m) => m.id)),
+        lib.id,
+      ),
+      // Other merged rows picked: their categories move here too.
+      env.DB.prepare('UPDATE catalogs SET merged_into=?1 WHERE merged_into IN (SELECT value FROM json_each(?2)) AND library_id=?3').bind(
+        target,
+        JSON.stringify(otherMerged),
         lib.id,
       ),
       recountMerges(lib.id),
-      // A merged row left with no categories (because they moved here) is removed.
-      env.DB.prepare('DELETE FROM catalogs WHERE library_id=? AND is_merge=1 AND id NOT IN (SELECT merged_into FROM catalogs WHERE merged_into IS NOT NULL)').bind(lib.id),
+      // Merged rows left with no categories are removed (with their settings).
+      env.DB.prepare(`DELETE FROM catalog_prefs WHERE catalog_id IN (${EMPTY_MERGES})`).bind(lib.id),
+      env.DB.prepare(`DELETE FROM catalogs WHERE id IN (${EMPTY_MERGES})`).bind(lib.id),
     ]);
-    return json({ ok: true, id: target });
+    return json({ ok: true, id: target, added: categories.length, combined: otherMerged.length });
   }
   const unmergeMatch = path.match(/^\/api\/catalogs\/(\d+)\/unmerge$/);
   if (method === 'POST' && unmergeMatch) {

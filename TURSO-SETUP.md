@@ -59,6 +59,8 @@ On the **Rows** page:
 - **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.
 - **Merge**: tick categories and press **Merge selected**. The merged row always shows everything in its
   categories, so new titles from the provider appear in it automatically. **Unmerge** splits it back.
+  Ticks stay while you change the filter; **Add selected to…** puts everything ticked into an existing
+  merged row, and ticking merged rows combines them into the chosen one.
 - **Auto-hide**: words like `ARABIC, XXX` hide matching categories everywhere, including future ones. Optionally,
   new categories start hidden and get a **New** badge.
 
