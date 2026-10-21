@@ -44,6 +44,8 @@ Their playback uses their own account. They see the rows exactly as the owner se
 ## Managing rows (owner)
 
 On the **Rows** page:
+- **Only show titles with full metadata in Nuvio** (on by default): titles TMDB couldn't match are kept
+  out of Nuvio, rows and search, but stay in VODStack and appear once they're matched.
 - **Hide/Show**, **Rename**, drag the **⠿** handle (or use ↑ ↓ ⤒ ⤓) to reorder, or **Sort all rows**.
 - **View** a row to see its titles, with posters and whether TMDB matched them.
 - **A–Z / Newest first** per row sets how its titles are ordered in Nuvio.

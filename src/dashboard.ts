@@ -138,6 +138,10 @@ const PAGE_JS = String.raw`(function () {
   }
 
   // ---------- rows ----------
+  function onlyMatched() {
+    var lib = S.data.library;
+    return !!(lib && lib.settings && lib.settings.onlyMatched !== false && lib.stats && lib.stats.withImdb > 0);
+  }
   function isNew(c) {
     var lib = S.data.library;
     var now = Date.now() / 1000;
@@ -225,8 +229,10 @@ const PAGE_JS = String.raw`(function () {
     return m < 60 ? 'updated ' + m + ' min ago' : 'updated ' + Math.round(m / 60) + ' h ago';
   }
   function rulesPanel() {
-    var st = S.data.library.settings || { hideNew: false, hideRules: [] };
-    return '<div class="panel"><h3>Auto-hide</h3><p>Categories whose name contains any of these words are hidden automatically, including new ones from future refreshes. Separate words with commas.</p>' +
+    var st = S.data.library.settings || { hideNew: false, hideRules: [], onlyMatched: true };
+    return '<div class="panel"><h3>What family sees</h3>' +
+      '<label style="display:flex;gap:8px;align-items:center;color:var(--text);margin-top:0"><input type="checkbox" id="onlyMatched" style="width:auto"' + (st.onlyMatched !== false ? ' checked' : '') + '> Only show titles with full metadata in Nuvio (recommended)</label>' +
+      '<div class="help">Titles TMDB couldn’t match (wrong names, no poster or description) are kept out of Nuvio. They stay in VODStack and appear automatically if they get matched later. Turns on once at least some titles are matched.</div><hr class="divider"><h3>Auto-hide</h3><p>Categories whose name contains any of these words are hidden automatically, including new ones from future refreshes. Separate words with commas.</p>' +
       '<input id="hideRules" placeholder="e.g. ARABIC, XXX, |FR|, ADULT" value="' + esc(st.hideRules.join(', ')) + '">' +
       '<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="hideNew" style="width:auto"' + (st.hideNew ? ' checked' : '') + '> New categories from the provider start hidden (they get a “New” badge so you can review them)</label>' +
       '<div class="actions"><button class="small" id="saveRules">Save</button><button class="small primary" id="applyRules">Save and hide matching now</button></div><div id="msgRules"></div></div>';
@@ -237,8 +243,8 @@ const PAGE_JS = String.raw`(function () {
     var members = c.isMerge ? cats.filter(function (m) { return m.mergedInto === c.id; }) : [];
     var meta = '<span class="pill">' + (c.media_type === 'movie' ? 'Movies' : 'Series') + '</span>' +
       (c.isMerge ? '<span class="pill">Merged</span>' : '') + (c.smart ? '<span class="pill" style="color:var(--accent)">Smart · TMDB</span>' : '') + (isNew(c) ? '<span class="pill" style="color:var(--green)">New</span>' : '') +
-      (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles · ' +
-      (parent ? 'Shown inside “' + esc(parent.name) + '”' : c.item_count ? (c.hidden ? 'Hidden' : 'Shown') : 'Empty');
+      (c.renamed && !c.isMerge && !c.smart ? 'Provider name: ' + esc(c.source_category_name) + ' · ' : '') + (c.smart ? ago(c.smart.at) + ' · ' : '') + n(c.item_count) + ' titles' + (!c.smart && onlyMatched() ? ' (' + n(c.matchedCount) + ' with metadata)' : '') + ' · ' +
+      (parent ? 'Shown inside “' + esc(parent.name) + '”' : !c.item_count ? 'Empty' : c.hidden ? 'Hidden' : onlyMatched() && !c.matchedCount ? 'Not in Nuvio (nothing matched yet)' : 'Shown');
     var buttons = parent
       ? '<button class="small" data-unmerge="' + c.id + '">Remove from merge</button>'
       : '<button class="small" data-rename="' + c.id + '">Rename</button><button class="small" data-toggle="' + c.id + '">' + (c.hidden ? 'Show' : 'Hide') + '</button>' +
@@ -283,7 +289,7 @@ const PAGE_JS = String.raw`(function () {
       return async function () {
         var words = el('hideRules').value.split(',').map(function (w) { return w.trim(); }).filter(Boolean);
         try {
-          var r = await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, apply: apply } });
+          var r = await api('/api/library/settings', { method: 'POST', body: { hideRules: words, hideNew: el('hideNew').checked, onlyMatched: el('onlyMatched').checked, apply: apply } });
           await load();
           say('msgRules', apply ? 'Saved. ' + n(r.hidden) + ' categories hidden.' : 'Saved.', true);
         } catch (e) { say('msgRules', e.message); }
@@ -291,6 +297,7 @@ const PAGE_JS = String.raw`(function () {
     };
     wireSmart();
     el('saveRules').onclick = saveRules(false);
+    el('onlyMatched').onchange = saveRules(false);
     el('applyRules').onclick = saveRules(true);
     el('rowSearch').oninput = function () { S.q = el('rowSearch').value; el('rowList').innerHTML = rowList(); wireRowButtons(); };
     function bulk(hidden) {

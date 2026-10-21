@@ -26,6 +26,7 @@ import {
   getLibrary,
   librarySettings,
   matchesHideRule,
+  recountCatalogs,
   getLogin,
   hideSecrets,
   html,
@@ -280,7 +281,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       .map((w: unknown) => str(w, 60))
       .filter(Boolean)
       .slice(0, 100);
-    const settings = { hideNew: !!body.hideNew, hideRules };
+    const settings = { hideNew: !!body.hideNew, hideRules, onlyMatched: body.onlyMatched !== false };
     await env.DB.prepare('UPDATE libraries SET settings_json=? WHERE id=?').bind(JSON.stringify(settings), lib.id).run();
     let hidden = 0;
     if (body.apply && hideRules.length) {
@@ -466,25 +467,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         .run();
       return json({ ok: true });
     }
-    // Store per-category counts once here, so pages never have to count titles.
-    await env.DB.prepare(
-      `UPDATE catalogs SET item_count=n.cnt FROM (SELECT catalog_id,COUNT(*) AS cnt FROM vod_items WHERE library_id=?1 AND is_available=1 GROUP BY catalog_id) n
-       WHERE catalogs.id=n.catalog_id AND catalogs.item_count IS NOT n.cnt`,
-    )
-      .bind(lib.id)
-      .run();
-    await env.DB.prepare(
-      'UPDATE catalogs SET item_count=0 WHERE library_id=?1 AND item_count>0 AND smart_json IS NULL AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)',
-    )
-      .bind(lib.id)
-      .run();
-    // Merged rows count the titles of the categories merged into them.
-    await env.DB.prepare(
-      `UPDATE catalogs SET item_count=COALESCE((SELECT SUM(m.item_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
-       WHERE library_id=? AND is_merge=1`,
-    )
-      .bind(lib.id)
-      .run();
+    // Store per-row counts once here, so pages never have to count titles.
+    await recountCatalogs(env, lib.id);
     const purged = await purgeRemoved(env, lib.id);
     await env.DB.prepare("UPDATE libraries SET last_refresh_status=?,last_refresh_at=datetime('now') WHERE id=?")
       .bind((str(body.status, 180) || 'OK') + (purged ? ` · ${purged} long-gone titles cleaned up` : ''), lib.id)
@@ -737,6 +721,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === '/api/tmdb/stats' && method === 'POST') {
     // Recount after a matching run (one read of the library, then stored).
     const lib = await ownedLibrary(env, setupId);
+    await recountCatalogs(env, lib.id);
     return json(await libraryStats(env, lib.id));
   }
   if (path === '/api/tmdb/pending' && method === 'GET') {

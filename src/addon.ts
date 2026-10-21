@@ -10,6 +10,8 @@
 // search terms, and responses carry cache headers so players can reuse them.
 import {
   catalogsFor,
+  HAS_METADATA,
+  onlyMatchedActive,
   getLibrary,
   getLogin,
   json,
@@ -120,10 +122,13 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     id = decodeURIComponent(id);
   } catch {}
   const extra = parseExtra(m[6]);
+  // Owner's choice: only titles with full metadata reach Nuvio (on by default).
+  const onlyMatched = !!lib && onlyMatchedActive(lib);
+  const META = onlyMatched ? ` AND ${HAS_METADATA}` : '';
 
   if (m[2] === 'manifest.json') {
     // Hidden, empty and merged-away categories are left out, so Nuvio doesn't request rows nobody sees.
-    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && c.item_count > 0 && !c.mergedInto) : [];
+    const cats = lib ? (await catalogsFor(env, lib.owner_setup_id, lib.id)).filter((c) => !c.hidden && !c.mergedInto && (onlyMatched ? c.matchedCount : c.item_count) > 0) : [];
     return cached(
       {
         id: 'com.vodstack.addon',
@@ -157,7 +162,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       const rows = (
         await env.DB.prepare(
           `SELECT ${ITEM_COLS} FROM (SELECT DISTINCT item_id FROM search_terms WHERE term >= ?1 AND term < ?2 LIMIT 300) t
-           CROSS JOIN vod_items v ON v.id=t.item_id WHERE v.library_id=?3 AND v.media_type=?4 AND v.is_available=1`,
+           CROSS JOIN vod_items v ON v.id=t.item_id WHERE v.library_id=?3 AND v.media_type=?4 AND v.is_available=1${META}`,
         )
           .bind(prefix + q, prefix + q + '~', lib.id, type)
           .all<ItemRow>()
@@ -200,7 +205,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       const page = ids.slice(skip, skip + PAGE);
       if (!page.length) return cached({ metas: [] }, 900);
       const rows = (
-        await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1`)
+        await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.id IN (SELECT value FROM json_each(?)) AND v.is_available=1${META}`)
           .bind(JSON.stringify(page))
           .all<ItemRow>()
       ).results;
@@ -214,7 +219,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
       ).map((r) => r[0]);
       const lists = await Promise.all(
         members.map((mid) =>
-          env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ${ORDER} LIMIT ?`)
+          env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1${META} ${ORDER} LIMIT ?`)
             .bind(mid, skip + PAGE)
             .all<ItemRow>()
             .then((r) => r.results),
@@ -230,7 +235,7 @@ export async function handleAddon(env: Env, path: string): Promise<Response | nu
     }
     // Walks the (catalog_id, title) index: reads only the titles on this page (plus any skipped).
     const rows = (
-      await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1 ${ORDER} LIMIT ? OFFSET ?`)
+      await env.DB.prepare(`SELECT ${ITEM_COLS} FROM vod_items v WHERE v.catalog_id=? AND v.is_available=1${META} ${ORDER} LIMIT ? OFFSET ?`)
         .bind(catalogId, PAGE, skip)
         .all<ItemRow>()
     ).results;

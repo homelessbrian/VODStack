@@ -103,7 +103,7 @@ export function wrapClient(client: Client): D1Database {
   return new Db(client);
 }
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 const MIGRATIONS: Record<number, string[]> = {
   1: [
     `CREATE TABLE IF NOT EXISTS setups (
@@ -226,6 +226,10 @@ const MIGRATIONS: Record<number, string[]> = {
     'ALTER TABLE catalogs ADD COLUMN smart_at INTEGER',
     // Find titles by TMDB ID (only titles that have one are indexed).
     'CREATE INDEX IF NOT EXISTS vod_items_tmdbid_idx ON vod_items(tmdb_id) WHERE tmdb_id IS NOT NULL',
+  ],
+  4: [
+    // Per-row count of titles with full metadata (IMDb match), for "only show matched titles".
+    'ALTER TABLE catalogs ADD COLUMN matched_count INTEGER NOT NULL DEFAULT 0',
   ],
 };
 

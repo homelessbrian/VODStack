@@ -160,14 +160,50 @@ export type Library = {
   settings_json: string | null;
   created_at: string;
 };
-export type LibrarySettings = { hideNew: boolean; hideRules: string[] };
+export type LibrarySettings = { hideNew: boolean; hideRules: string[]; onlyMatched: boolean };
 export function librarySettings(lib: { settings_json: string | null }): LibrarySettings {
   try {
     const s = JSON.parse(lib.settings_json || '{}');
-    return { hideNew: !!s.hideNew, hideRules: Array.isArray(s.hideRules) ? s.hideRules.map(String) : [] };
+    // onlyMatched is on unless the owner turned it off.
+    return { hideNew: !!s.hideNew, hideRules: Array.isArray(s.hideRules) ? s.hideRules.map(String) : [], onlyMatched: s.onlyMatched !== false };
   } catch {
-    return { hideNew: false, hideRules: [] };
+    return { hideNew: false, hideRules: [], onlyMatched: true };
   }
+}
+/** SQL condition for "has full metadata". M3U series episodes can't be matched, so they always count. */
+export const HAS_METADATA = "(v.imdb_id IS NOT NULL OR v.tmdb_match_status='skip')";
+/**
+ * Should Nuvio only get titles with full metadata? Only once at least something is matched,
+ * so a library without a TMDB key doesn't suddenly look empty.
+ */
+export function onlyMatchedActive(lib: { settings_json: string | null; stats_json: string | null }) {
+  if (!librarySettings(lib).onlyMatched) return false;
+  try {
+    return (JSON.parse(lib.stats_json || '{}').withImdb || 0) > 0;
+  } catch {
+    return false;
+  }
+}
+/** Recount titles per row (all, and with metadata). Reads the library once; writes only changed rows. */
+export async function recountCatalogs(env: Env, libraryId: string) {
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE catalogs SET item_count=n.cnt,matched_count=n.m FROM (
+         SELECT v.catalog_id,COUNT(*) AS cnt,SUM(CASE WHEN ${HAS_METADATA} THEN 1 ELSE 0 END) AS m
+         FROM vod_items v WHERE v.library_id=?1 AND v.is_available=1 GROUP BY v.catalog_id) n
+       WHERE catalogs.id=n.catalog_id AND (catalogs.item_count IS NOT n.cnt OR catalogs.matched_count IS NOT n.m)`,
+    ).bind(libraryId),
+    env.DB.prepare(
+      `UPDATE catalogs SET item_count=0,matched_count=0 WHERE library_id=?1 AND (item_count>0 OR matched_count>0) AND smart_json IS NULL AND is_merge=0
+       AND id NOT IN (SELECT DISTINCT catalog_id FROM vod_items WHERE library_id=?1 AND is_available=1)`,
+    ).bind(libraryId),
+    // Merged rows count the titles of the categories merged into them.
+    env.DB.prepare(
+      `UPDATE catalogs SET item_count=COALESCE((SELECT SUM(m.item_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0),
+         matched_count=COALESCE((SELECT SUM(m.matched_count) FROM catalogs m WHERE m.merged_into=catalogs.id),0)
+       WHERE library_id=? AND is_merge=1`,
+    ).bind(libraryId),
+  ]);
 }
 /** Does a category name match one of the owner's auto-hide words? (case-insensitive, anywhere in the name) */
 export function matchesHideRule(name: string, rules: string[]) {
@@ -403,12 +439,13 @@ export type CatalogView = {
   createdAt: number | null;
   titleOrder: 'az' | 'recent';
   smart: { list: string; type: MediaType; genre?: number; at: number | null } | null;
+  matchedCount: number;
 };
 /** A library's categories as this person sees them (their names, order and hidden choices). ~1 read per category. */
 export async function catalogsFor(env: Env, setupId: string, libraryId: string): Promise<CatalogView[]> {
   const rows = (
     await env.DB.prepare(
-      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,c.smart_json,c.smart_at,p.display_name,p.is_hidden,p.sort_order AS psort
+      `SELECT c.id,c.media_type,c.source_category_name,c.item_count,c.sort_order,c.is_merge,c.merged_into,c.created_at,c.title_order,c.smart_json,c.smart_at,c.matched_count,p.display_name,p.is_hidden,p.sort_order AS psort
        FROM catalogs c LEFT JOIN catalog_prefs p ON p.setup_id=? AND p.catalog_id=c.id WHERE c.library_id=?`,
     )
       .bind(setupId, libraryId)
@@ -429,6 +466,7 @@ export async function catalogsFor(env: Env, setupId: string, libraryId: string):
       createdAt: r.created_at ?? null,
       titleOrder: (r.title_order === 'recent' ? 'recent' : 'az') as 'az' | 'recent',
       smart: r.smart_json ? { ...JSON.parse(r.smart_json), at: r.smart_at ?? null } : null,
+      matchedCount: r.smart_json ? r.item_count : r.matched_count,
     }))
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }
